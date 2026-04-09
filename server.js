@@ -4,6 +4,67 @@ const path = require("path");
 
 const PORT = process.env.PORT || 3099;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, "registrations.db");
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "kdrivas1989@gmail.com";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Bogus714*";
+const crypto = require("crypto");
+
+// Simple session store
+const sessions = new Map();
+function createSession() {
+  const token = crypto.randomBytes(32).toString("hex");
+  sessions.set(token, { created: Date.now() });
+  return token;
+}
+function isValidSession(token) {
+  if (!token) return false;
+  const session = sessions.get(token);
+  if (!session) return false;
+  // 24 hour expiry
+  if (Date.now() - session.created > 86400000) { sessions.delete(token); return false; }
+  return true;
+}
+function getCookie(req, name) {
+  const header = req.headers.cookie || "";
+  const match = header.match(new RegExp("(?:^|;\\s*)" + name + "=([^;]*)"));
+  return match ? match[1] : null;
+}
+
+function getLoginHTML() {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>USCPA Export - Login</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a1a; color: #ededed; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+    .login { background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 12px; padding: 32px; width: 360px; }
+    h1 { color: #00d4ff; font-size: 22px; margin-bottom: 6px; }
+    .sub { color: #888; font-size: 13px; margin-bottom: 24px; }
+    label { display: block; color: #aaa; font-size: 12px; margin-bottom: 4px; margin-top: 14px; }
+    input { width: 100%; padding: 10px 14px; border-radius: 8px; border: 1px solid #2a2a4a; background: #16213e; color: #ededed; font-size: 14px; }
+    input:focus { outline: none; border-color: #00d4ff; }
+    button { width: 100%; margin-top: 20px; padding: 12px; border-radius: 8px; border: none; background: #00d4ff; color: #000; font-weight: 700; font-size: 14px; cursor: pointer; }
+    button:hover { opacity: 0.9; }
+    .err { color: #ff6b6b; font-size: 12px; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <div class="login">
+    <h1>USCPA Export</h1>
+    <p class="sub">Sign in to access registration data</p>
+    <form method="POST" action="/login">
+      <label>Email</label>
+      <input name="email" type="email" placeholder="Email" required>
+      <label>Password</label>
+      <input name="password" type="password" placeholder="Password" required>
+      <button type="submit">Sign In</button>
+    </form>
+  </div>
+</body>
+</html>`;
+}
 
 // WooCommerce credentials
 const WC_API_URL = "https://swoopleague.com";
@@ -325,8 +386,13 @@ function getHTML() {
 </head>
 <body>
   <div class="container">
-    <h1>USCPA WooCommerce Export</h1>
-    <p class="subtitle">Pull 2026 registrations from swoopleague.com and export CSV files</p>
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <h1>USCPA WooCommerce Export</h1>
+        <p class="subtitle">Pull 2026 registrations from swoopleague.com and export CSV files</p>
+      </div>
+      <a href="/logout" style="color:#888;font-size:12px;text-decoration:none;border:1px solid #333;padding:6px 14px;border-radius:6px">Sign Out</a>
+    </div>
     <div class="sync-info" id="syncInfo"></div>
 
     <div id="error"></div>
@@ -341,9 +407,9 @@ function getHTML() {
     <div class="tabs" id="tabs" style="display:none"></div>
 
     <div class="stats" id="stats" style="display:none">
-      <div class="stat"><div class="stat-label">Total</div><div class="stat-value cyan" id="statTotal">0</div></div>
-      <div class="stat"><div class="stat-label">Meets</div><div class="stat-value gold" id="statMeets">0</div></div>
-      <div class="stat"><div class="stat-label">League</div><div class="stat-value green" id="statLeague">0</div></div>
+      <div class="stat"><div class="stat-label">Registrations</div><div class="stat-value cyan" id="statTotal">0</div></div>
+      <div class="stat"><div class="stat-label">Meet Entries</div><div class="stat-value gold" id="statMeets">0</div></div>
+      <div class="stat"><div class="stat-label">League Members</div><div class="stat-value green" id="statLeague">0</div></div>
       <div class="stat"><div class="stat-label">Competitors</div><div class="stat-value" id="statPeople">0</div></div>
     </div>
 
@@ -364,73 +430,44 @@ function getHTML() {
   <div class="toast" id="toast"></div>
 
   <div class="modal-overlay" id="manualModal">
-    <div class="modal">
+    <div class="modal" style="max-width:700px">
       <h2>Manual Registration</h2>
-      <div class="row">
-        <div><label>Name *</label><input id="mName" placeholder="Full name"></div>
-        <div><label>Email *</label><input id="mEmail" type="email" placeholder="email@example.com"></div>
+      <p style="color:#888;font-size:12px;margin-bottom:16px">Register one or more competitors for multiple events with a single entry (e.g. military team paying cash for the whole season).</p>
+
+      <!-- Events Selection -->
+      <label style="margin-top:0">Select Events *</label>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;margin-bottom:16px">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0;background:#16213e;padding:6px 12px;border-radius:6px;border:1px solid #2a2a4a;font-size:12px">
+          <input type="checkbox" id="mSelectAll" onchange="toggleAllEvents(this.checked)"> <strong style="color:#ffc107">All Meets + League</strong>
+        </label>
+        <label class="evt-cb" style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0;background:#16213e;padding:6px 12px;border-radius:6px;border:1px solid #2a2a4a;font-size:12px">
+          <input type="checkbox" value="Meet #1 Registration 2026" class="mEvt"> Meet #1
+        </label>
+        <label class="evt-cb" style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0;background:#16213e;padding:6px 12px;border-radius:6px;border:1px solid #2a2a4a;font-size:12px">
+          <input type="checkbox" value="Meet #2 Registration 2026" class="mEvt"> Meet #2
+        </label>
+        <label class="evt-cb" style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0;background:#16213e;padding:6px 12px;border-radius:6px;border:1px solid #2a2a4a;font-size:12px">
+          <input type="checkbox" value="Meet #3 Registration 2026" class="mEvt"> Meet #3
+        </label>
+        <label class="evt-cb" style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0;background:#16213e;padding:6px 12px;border-radius:6px;border:1px solid #2a2a4a;font-size:12px">
+          <input type="checkbox" value="Meet #4 Registration 2026" class="mEvt"> Meet #4
+        </label>
+        <label class="evt-cb" style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0;background:#16213e;padding:6px 12px;border-radius:6px;border:1px solid #2a2a4a;font-size:12px">
+          <input type="checkbox" value="Meet #5 Registration 2026" class="mEvt"> Meet #5
+        </label>
+        <label class="evt-cb" style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0;background:#16213e;padding:6px 12px;border-radius:6px;border:1px solid #2a2a4a;font-size:12px">
+          <input type="checkbox" value="Pilots of the Caribbean 2026" class="mEvt"> Freestyle
+        </label>
+        <label class="evt-cb" style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0;background:#16213e;padding:6px 12px;border-radius:6px;border:1px solid #2a2a4a;font-size:12px">
+          <input type="checkbox" value="League Registration 2026" class="mEvt"> League
+        </label>
+        <label class="evt-cb" style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0;background:#16213e;padding:6px 12px;border-radius:6px;border:1px solid #2a2a4a;font-size:12px">
+          <input type="checkbox" value="Team Registration 2026" class="mEvt"> Team
+        </label>
       </div>
+
+      <!-- Payment Info -->
       <div class="row">
-        <div>
-          <label>Event *</label>
-          <select id="mEvent">
-            <option value="">Select event...</option>
-            <option value="Meet #1 Registration 2026">Meet #1</option>
-            <option value="Meet #2 Registration 2026">Meet #2</option>
-            <option value="Meet #3 Registration 2026">Meet #3</option>
-            <option value="Meet #4 Registration 2026">Meet #4</option>
-            <option value="Meet #5 Registration 2026">Meet #5</option>
-            <option value="Pilots of the Caribbean 2026">Pilots of the Caribbean</option>
-            <option value="League Registration 2026">League Registration</option>
-            <option value="Team Registration 2026">Team Registration</option>
-          </select>
-        </div>
-        <div>
-          <label>Country</label>
-          <select id="mCountry">
-            <option value="USA">United States</option>
-            <option value="CAN">Canada</option>
-            <option value="GBR">United Kingdom</option>
-            <option value="AUS">Australia</option>
-            <option value="GER">Germany</option>
-            <option value="FRA">France</option>
-            <option value="BRA">Brazil</option>
-            <option value="ARG">Argentina</option>
-            <option value="MEX">Mexico</option>
-            <option value="ISR">Israel</option>
-            <option value="OTHER">Other</option>
-          </select>
-        </div>
-      </div>
-      <div class="row">
-        <div>
-          <label>Comp Class</label>
-          <select id="mClass">
-            <option value="">N/A</option>
-            <option value="sport">Sport</option>
-            <option value="intermediate">Intermediate</option>
-            <option value="advanced">Advanced</option>
-            <option value="pro">Pro</option>
-          </select>
-        </div>
-        <div>
-          <label>Membership</label>
-          <select id="mMembership">
-            <option value="Member">Member</option>
-            <option value="Non-Member">Non-Member</option>
-          </select>
-        </div>
-      </div>
-      <div class="row">
-        <div><label>Wing Type</label><input id="mWing" placeholder="e.g. Valkyrie"></div>
-        <div><label>Wing Size</label><input id="mSize" placeholder="e.g. 71"></div>
-      </div>
-      <div class="row">
-        <div><label>Wing Loading</label><input id="mLoading" placeholder="e.g. 2.5"></div>
-        <div><label>Degree of Turn</label><input id="mTurn" placeholder="e.g. 270"></div>
-      </div>
-      <div class="row">
-        <div><label>Amount Paid</label><input id="mPrice" placeholder="e.g. 75.00"></div>
         <div>
           <label>Payment Method</label>
           <select id="mPayment">
@@ -442,11 +479,25 @@ function getHTML() {
             <option value="other">Other</option>
           </select>
         </div>
+        <div>
+          <label>Total Amount Paid</label>
+          <input id="mPrice" placeholder="e.g. 2000.00">
+        </div>
       </div>
+
+      <!-- Competitors -->
+      <div style="margin-top:20px;border-top:1px solid #2a2a4a;padding-top:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <label style="margin:0;font-size:14px;color:#00d4ff;font-weight:700">Competitors</label>
+          <button class="btn-add" style="padding:6px 14px;font-size:12px" onclick="addManualComp()">+ Add Competitor</button>
+        </div>
+        <div id="manualComps"></div>
+      </div>
+
       <div id="manualError" style="color:#ff6b6b;font-size:12px;margin-top:8px"></div>
       <div class="actions">
         <button class="btn-cancel" onclick="closeManual()">Cancel</button>
-        <button class="btn-save" onclick="saveManual()">Save Registration</button>
+        <button class="btn-save" onclick="saveManual()">Save All Registrations</button>
       </div>
     </div>
   </div>
@@ -590,41 +641,96 @@ function getHTML() {
       window.location.href = "/api/csv?" + params.toString();
     }
 
+    let manualCompCount = 0;
+
     function openManual() {
       document.getElementById("manualModal").classList.add("open");
       document.getElementById("manualError").textContent = "";
+      document.getElementById("manualComps").innerHTML = "";
+      document.getElementById("mSelectAll").checked = false;
+      document.querySelectorAll(".mEvt").forEach(cb => cb.checked = false);
+      document.getElementById("mPrice").value = "";
+      manualCompCount = 0;
+      addManualComp(); // Start with one competitor
     }
 
     function closeManual() {
       document.getElementById("manualModal").classList.remove("open");
     }
 
+    function toggleAllEvents(checked) {
+      const meets = ["Meet #1 Registration 2026","Meet #2 Registration 2026","Meet #3 Registration 2026","Meet #4 Registration 2026","Meet #5 Registration 2026","League Registration 2026"];
+      document.querySelectorAll(".mEvt").forEach(cb => {
+        if (meets.includes(cb.value)) cb.checked = checked;
+      });
+    }
+
+    function addManualComp() {
+      const idx = manualCompCount++;
+      const div = document.createElement("div");
+      div.style.cssText = "background:#0d1525;border:1px solid #2a2a4a;border-radius:8px;padding:12px;margin-bottom:10px;position:relative";
+      div.innerHTML = \`
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="color:#aaa;font-size:11px;font-weight:600">COMPETITOR \${idx + 1}</span>
+          \${idx > 0 ? '<button onclick="this.closest(\\'div\\').remove()" style="background:none;border:none;color:#ff6b6b;cursor:pointer;font-size:11px">Remove</button>' : ''}
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <input class="mc-name" placeholder="Full name *" style="padding:7px 10px;border-radius:6px;border:1px solid #2a2a4a;background:#16213e;color:#ededed;font-size:13px">
+          <input class="mc-email" type="email" placeholder="Email *" style="padding:7px 10px;border-radius:6px;border:1px solid #2a2a4a;background:#16213e;color:#ededed;font-size:13px">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+          <select class="mc-class" style="padding:7px 10px;border-radius:6px;border:1px solid #2a2a4a;background:#16213e;color:#ededed;font-size:13px">
+            <option value="">Comp Class...</option>
+            <option value="sport">Sport</option>
+            <option value="intermediate">Intermediate</option>
+            <option value="advanced">Advanced</option>
+            <option value="pro">Pro</option>
+          </select>
+          <select class="mc-country" style="padding:7px 10px;border-radius:6px;border:1px solid #2a2a4a;background:#16213e;color:#ededed;font-size:13px">
+            <option value="USA">United States</option>
+            <option value="CAN">Canada</option>
+            <option value="GBR">United Kingdom</option>
+            <option value="AUS">Australia</option>
+            <option value="GER">Germany</option>
+            <option value="FRA">France</option>
+            <option value="BRA">Brazil</option>
+            <option value="ARG">Argentina</option>
+            <option value="MEX">Mexico</option>
+            <option value="ISR">Israel</option>
+            <option value="OTHER">Other</option>
+          </select>
+        </div>
+      \`;
+      document.getElementById("manualComps").appendChild(div);
+    }
+
     async function saveManual() {
-      const name = document.getElementById("mName").value.trim();
-      const email = document.getElementById("mEmail").value.trim();
-      const event = document.getElementById("mEvent").value;
-      if (!name || !email || !event) {
-        document.getElementById("manualError").textContent = "Name, email, and event are required.";
+      const events = Array.from(document.querySelectorAll(".mEvt:checked")).map(cb => cb.value);
+      if (events.length === 0) {
+        document.getElementById("manualError").textContent = "Select at least one event.";
         return;
       }
 
-      const eventTypes = {
-        "Meet #1 Registration 2026": "meet", "Meet #2 Registration 2026": "meet",
-        "Meet #3 Registration 2026": "meet", "Meet #4 Registration 2026": "meet",
-        "Meet #5 Registration 2026": "meet", "Pilots of the Caribbean 2026": "freestyle",
-        "League Registration 2026": "league", "Team Registration 2026": "team",
-      };
+      const compDivs = document.getElementById("manualComps").children;
+      const competitors = [];
+      for (const div of compDivs) {
+        const name = div.querySelector(".mc-name").value.trim();
+        const email = div.querySelector(".mc-email").value.trim();
+        if (!name || !email) {
+          document.getElementById("manualError").textContent = "All competitors need a name and email.";
+          return;
+        }
+        competitors.push({
+          name,
+          email,
+          comp_class: div.querySelector(".mc-class").value,
+          country: div.querySelector(".mc-country").value,
+        });
+      }
 
       const body = {
-        name, email, event,
-        event_type: eventTypes[event] || "meet",
-        country: document.getElementById("mCountry").value,
-        membership: document.getElementById("mMembership").value,
-        comp_class: document.getElementById("mClass").value,
-        wing_type: document.getElementById("mWing").value.trim(),
-        wing_size: document.getElementById("mSize").value.trim(),
-        wing_loading: document.getElementById("mLoading").value.trim(),
-        degree_of_turn: document.getElementById("mTurn").value.trim(),
+        competitors,
+        events,
         price_paid: document.getElementById("mPrice").value.trim() || "0",
         payment_method: document.getElementById("mPayment").value,
       };
@@ -632,14 +738,11 @@ function getHTML() {
       try {
         const res = await fetch("/api/manual", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
         if (!res.ok) throw new Error(await res.text());
+        const result = await res.json();
         closeManual();
-        // Clear form
-        ["mName","mEmail","mWing","mSize","mLoading","mTurn","mPrice"].forEach(id => document.getElementById(id).value = "");
-        document.getElementById("mEvent").value = "";
-        document.getElementById("mClass").value = "";
         await loadCached();
         const toast = document.getElementById("toast");
-        toast.textContent = "Manual registration added for " + name;
+        toast.textContent = result.count + " registration(s) added for " + competitors.length + " competitor(s)";
         toast.style.display = "block";
         setTimeout(() => toast.style.display = "none", 4000);
       } catch (e) {
@@ -654,6 +757,65 @@ function getHTML() {
 // ── HTTP Server ──────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
+
+  // Login page
+  if (url.pathname === "/login" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(getLoginHTML());
+    return;
+  }
+
+  // Login POST
+  if (url.pathname === "/login" && req.method === "POST") {
+    const body = await new Promise((resolve) => {
+      let data = "";
+      req.on("data", (c) => (data += c));
+      req.on("end", () => resolve(data));
+    });
+    const params = new URLSearchParams(body);
+    const email = params.get("email")?.trim().toLowerCase();
+    const password = params.get("password");
+
+    if (email === ADMIN_EMAIL.toLowerCase() && password === ADMIN_PASSWORD) {
+      const token = createSession();
+      res.writeHead(302, {
+        Location: "/",
+        "Set-Cookie": `session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`,
+      });
+      res.end();
+    } else {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(getLoginHTML().replace("</form>", '<p class="err">Invalid email or password</p></form>'));
+    }
+    return;
+  }
+
+  // Logout
+  if (url.pathname === "/logout") {
+    const token = getCookie(req, "session");
+    if (token) sessions.delete(token);
+    res.writeHead(302, {
+      Location: "/login",
+      "Set-Cookie": "session=; Path=/; HttpOnly; Max-Age=0",
+    });
+    res.end();
+    return;
+  }
+
+  // Auth check for all other routes
+  const sessionToken = getCookie(req, "session");
+  if (!isValidSession(sessionToken)) {
+    if (url.pathname === "/" || url.pathname.startsWith("/api/")) {
+      if (url.pathname.startsWith("/api/")) {
+        res.writeHead(401, { "Content-Type": "text/plain" });
+        res.end("Unauthorized");
+      } else {
+        res.writeHead(302, { Location: "/login" });
+        res.end();
+      }
+      return;
+    }
+  }
 
   if (url.pathname === "/" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "text/html" });
@@ -683,7 +845,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Manual registration
+  // Manual registration (multiple competitors × multiple events)
   if (url.pathname === "/api/manual" && req.method === "POST") {
     try {
       const body = await new Promise((resolve, reject) => {
@@ -692,35 +854,47 @@ const server = http.createServer(async (req, res) => {
         req.on("end", () => { try { resolve(JSON.parse(data)); } catch { reject(new Error("Invalid JSON")); } });
       });
 
-      if (!body.name || !body.email || !body.event) {
+      const { competitors, events, price_paid, payment_method } = body;
+      if (!competitors?.length || !events?.length) {
         res.writeHead(400, { "Content-Type": "text/plain" });
-        res.end("Name, email, and event are required");
+        res.end("At least one competitor and one event are required");
         return;
       }
 
-      // Use negative order_id for manual entries (won't collide with WC order IDs)
-      const maxManual = db.prepare("SELECT MIN(order_id) as m FROM registration WHERE source = 'manual'").get();
-      const manualId = Math.min((maxManual?.m || 0) - 1, -1);
+      const eventTypes = {
+        "Meet #1 Registration 2026": "meet", "Meet #2 Registration 2026": "meet",
+        "Meet #3 Registration 2026": "meet", "Meet #4 Registration 2026": "meet",
+        "Meet #5 Registration 2026": "meet", "Pilots of the Caribbean 2026": "freestyle",
+        "League Registration 2026": "league", "Team Registration 2026": "team",
+      };
 
-      insertManual.run(
-        manualId,
-        body.name,
-        body.email.toLowerCase().trim(),
-        body.country || "USA",
-        body.event,
-        body.event_type || "meet",
-        body.membership || "Member",
-        body.comp_class || null,
-        body.wing_type || null,
-        body.wing_size || null,
-        body.wing_loading || null,
-        body.degree_of_turn || null,
-        body.price_paid || "0",
-        body.payment_method || "cash"
-      );
+      const maxManual = db.prepare("SELECT MIN(order_id) as m FROM registration WHERE source = 'manual'").get();
+      let manualId = Math.min((maxManual?.m || 0) - 1, -1);
+      let count = 0;
+
+      for (const comp of competitors) {
+        const hasLeague = events.includes("League Registration 2026");
+        for (const event of events) {
+          insertManual.run(
+            manualId,
+            comp.name,
+            comp.email.toLowerCase().trim(),
+            comp.country || "USA",
+            event,
+            eventTypes[event] || "meet",
+            hasLeague ? "Member" : "Non-Member",
+            comp.comp_class || null,
+            null, null, null, null,
+            price_paid || "0",
+            payment_method || "cash"
+          );
+          count++;
+        }
+        manualId--;
+      }
 
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true }));
+      res.end(JSON.stringify({ ok: true, count }));
     } catch (e) {
       res.writeHead(500, { "Content-Type": "text/plain" });
       res.end(e.message);
