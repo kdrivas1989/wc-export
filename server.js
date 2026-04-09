@@ -4,8 +4,11 @@ const path = require("path");
 
 const PORT = process.env.PORT || 3099;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, "registrations.db");
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "kdrivas1989@gmail.com";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Bogus714*";
+// Multiple admin users
+const ADMINS = [
+  { email: "kdrivas1989@gmail.com", password: "Bogus714*" },
+  { email: "curtbartholomew@hotmail.com", password: "uscpa2026" },
+];
 const crypto = require("crypto");
 
 // Session store in SQLite (survives restarts)
@@ -378,6 +381,9 @@ function getCompetitorsHTML() {
   <div class="container">
     <h1>USCPA Competitions 2026</h1>
     <p class="subtitle">United States Canopy Piloting Association &mdash; Registered Competitors</p>
+    <div style="text-align:center;margin-bottom:30px">
+      <a href="https://scoring.kd-evolution.com/results" target="_blank" style="color:#00d4ff;font-size:13px;text-decoration:none;border:1px solid #2a2a4a;padding:8px 20px;border-radius:8px;display:inline-block">View Live Scoring &amp; Results →</a>
+    </div>
     <div id="content"><div class="loading">Loading competitors...</div></div>
   </div>
   <script>
@@ -946,7 +952,8 @@ const server = http.createServer(async (req, res) => {
     const email = params.get("email")?.trim().toLowerCase();
     const password = params.get("password");
 
-    if (email === ADMIN_EMAIL.toLowerCase() && password === ADMIN_PASSWORD) {
+    const validUser = ADMINS.find(a => a.email.toLowerCase() === email && a.password === password);
+    if (validUser) {
       const remember = params.get("remember") === "1";
       const token = createSession(remember);
       const maxAge = remember ? 2592000 : 86400;
