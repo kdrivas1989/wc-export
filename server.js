@@ -538,6 +538,7 @@ function getHTML() {
       <button class="btn-add" onclick="openManual()">+ Manual Entry</button>
       <button class="btn-csv" onclick="downloadCSV('all')">Download CSV</button>
       <button class="btn-intime" onclick="downloadCSV('intime')">Download InTime CSV</button>
+      <button style="background:#9333ea;color:#fff" id="pushBtn" onclick="pushToScoring()">Push to KD Scoring</button>
     </div>
 
     <div class="tabs" id="tabs" style="display:none"></div>
@@ -803,6 +804,35 @@ function getHTML() {
       if (!allData.length) { alert("No data. Sync first."); return; }
       const params = new URLSearchParams({ type, event: activeTab });
       window.location.href = "/api/csv?" + params.toString();
+    }
+
+    async function pushToScoring() {
+      if (!allData.length) { alert("No data. Sync first."); return; }
+      if (!activeTab || activeTab.includes('League') || activeTab.includes('Team')) {
+        alert("Select a specific meet or freestyle tab first.");
+        return;
+      }
+      const btn = document.getElementById("pushBtn");
+      btn.disabled = true;
+      btn.textContent = "Pushing...";
+      try {
+        const res = await fetch("/api/push-scoring", {
+          method: "POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({ event: activeTab })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const result = await res.json();
+        const toast = document.getElementById("toast");
+        toast.textContent = "Pushed to KD Scoring: " + result.added + " added, " + result.skipped + " skipped";
+        toast.style.display = "block";
+        setTimeout(() => toast.style.display = "none", 5000);
+      } catch(e) {
+        alert("Push failed: " + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Push to KD Scoring";
+      }
     }
 
     let manualCompCount = 0;
@@ -1152,6 +1182,82 @@ const server = http.createServer(async (req, res) => {
 
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end(e.message);
+    }
+    return;
+  }
+
+  // Push competitors to KD Scoring
+  if (url.pathname === "/api/push-scoring" && req.method === "POST") {
+    try {
+      const body = await new Promise((resolve, reject) => {
+        let data = "";
+        req.on("data", (c) => (data += c));
+        req.on("end", () => { try { resolve(JSON.parse(data)); } catch { reject(new Error("Invalid JSON")); } });
+      });
+
+      const eventFilter = body.event;
+      if (!eventFilter) {
+        res.writeHead(400, { "Content-Type": "text/plain" });
+        res.end("Event filter required");
+        return;
+      }
+
+      // Get competitors for this event from local DB
+      const regs = db.prepare(
+        "SELECT * FROM registration WHERE event = ? AND (event_type = 'meet' OR event_type = 'freestyle')"
+      ).all(eventFilter);
+
+      if (regs.length === 0) {
+        res.writeHead(400, { "Content-Type": "text/plain" });
+        res.end("No meet/freestyle competitors for this event");
+        return;
+      }
+
+      // Get KD Scoring competitions to find matching one
+      const KD_SCORING_URL = "https://scoring.kd-evolution.com";
+      const KD_API_KEY = "uscpa-ext-api-2026-kd";
+
+      const compsRes = await fetch(`${KD_SCORING_URL}/api/external/competitions`, {
+        headers: { "X-API-Key": KD_API_KEY }
+      });
+      if (!compsRes.ok) throw new Error("Failed to fetch KD Scoring competitions: " + await compsRes.text());
+      const comps = await compsRes.json();
+
+      // Match by event name
+      const shortName = eventFilter.replace(" Registration 2026", "").replace(" 2026", "");
+      const match = comps.find(c =>
+        c.name.toLowerCase().includes(shortName.toLowerCase()) ||
+        shortName.toLowerCase().includes(c.name.toLowerCase().replace("uscpa ", "").replace(" - ", " "))
+      );
+
+      if (!match) {
+        // Return available competitions so admin can see what's there
+        res.writeHead(404, { "Content-Type": "text/plain" });
+        res.end("No matching competition found in KD Scoring for '" + shortName + "'. Available: " + comps.map(c => c.name).join(", "));
+        return;
+      }
+
+      // Push competitors
+      const competitors = regs.map(r => ({
+        name: r.name,
+        comp_class: r.comp_class || "open",
+        country: r.country || "USA",
+        event: "cp_dsz",
+      }));
+
+      const pushRes = await fetch(`${KD_SCORING_URL}/api/external/push-competitors`, {
+        method: "POST",
+        headers: { "X-API-Key": KD_API_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify({ competition_id: match.id, competitors }),
+      });
+      if (!pushRes.ok) throw new Error("Push failed: " + await pushRes.text());
+      const result = await pushRes.json();
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ added: result.added, skipped: result.skipped, competition: match.name }));
     } catch (e) {
       res.writeHead(500, { "Content-Type": "text/plain" });
       res.end(e.message);
