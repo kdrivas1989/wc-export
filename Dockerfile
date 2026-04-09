@@ -4,6 +4,7 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install --production
 COPY server.js .
+# bust cache v2
 RUN mkdir -p /data
 ENV PORT=3000
 ENV DB_PATH=/data/registrations.db
