@@ -1,0 +1,553 @@
+const http = require("http");
+const Database = require("better-sqlite3");
+const path = require("path");
+
+const PORT = process.env.PORT || 3099;
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, "registrations.db");
+
+// WooCommerce credentials
+const WC_API_URL = "https://swoopleague.com";
+const WC_CONSUMER_KEY = "ck_094770442eeedcd99d96da6711ce57171b568388";
+const WC_CONSUMER_SECRET = "cs_354183e905402122379286042090a99104534c59";
+
+// 2026 product ID → event mapping
+const PRODUCT_MAP = {
+  9879: { name: "Meet #1 Registration 2026", type: "meet" },
+  9883: { name: "Meet #2 Registration 2026", type: "meet" },
+  9888: { name: "Meet #3 Registration 2026", type: "meet" },
+  9892: { name: "Meet #4 Registration 2026", type: "meet" },
+  9900: { name: "Meet #5 Registration 2026", type: "meet" },
+  9904: { name: "Pilots of the Caribbean 2026", type: "freestyle" },
+  9877: { name: "League Registration 2026", type: "league" },
+  9878: { name: "Team Registration 2026", type: "team" },
+};
+
+const COUNTRY_MAP = {
+  US: "USA", CA: "CAN", GB: "GBR", AU: "AUS", NZ: "NZL", ZA: "RSA",
+  DE: "GER", FR: "FRA", ES: "ESP", IT: "ITA", NL: "NED", BE: "BEL",
+  CH: "SUI", AT: "AUT", SE: "SWE", NO: "NOR", DK: "DEN", FI: "FIN",
+  PL: "POL", CZ: "CZE", RU: "RUS", JP: "JPN", KR: "KOR", CN: "CHN",
+  IN: "IND", BR: "BRA", AR: "ARG", MX: "MEX", CO: "COL", CL: "CHI",
+  AE: "UAE", IL: "ISR", SG: "SGP", MY: "MAS", TH: "THA", PH: "PHI",
+  PT: "POR", IE: "IRL", HR: "CRO", BH: "BRN", QA: "QAT", KW: "KUW",
+  OM: "OMA", BG: "BUL", HU: "HUN", SI: "SLO",
+};
+
+function convertCountry(code) {
+  if (!code) return "USA";
+  return COUNTRY_MAP[code.toUpperCase()] || code.toUpperCase();
+}
+
+function getMeta(metaData, key) {
+  if (!metaData) return "";
+  const m = metaData.find((m) => m.key === key);
+  return m ? String(m.value || "").trim() : "";
+}
+
+// ── Database ──────────────────────────────────────────────
+const db = new Database(DB_PATH);
+db.pragma("journal_mode = WAL");
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS registration (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    email TEXT NOT NULL,
+    country TEXT,
+    event TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    membership TEXT,
+    comp_class TEXT,
+    wing_type TEXT,
+    wing_size TEXT,
+    wing_loading TEXT,
+    degree_of_turn TEXT,
+    price_paid TEXT,
+    order_date TEXT,
+    synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(order_id, event)
+  );
+
+  CREATE TABLE IF NOT EXISTS sync_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+    orders_fetched INTEGER NOT NULL DEFAULT 0,
+    new_registrations INTEGER NOT NULL DEFAULT 0
+  );
+`);
+
+const insertReg = db.prepare(`
+  INSERT OR IGNORE INTO registration (order_id, name, email, country, event, event_type, membership, comp_class, wing_type, wing_size, wing_loading, degree_of_turn, price_paid, order_date)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+
+const insertSync = db.prepare(`
+  INSERT INTO sync_log (orders_fetched, new_registrations) VALUES (?, ?)
+`);
+
+function getAllFromDB() {
+  return db.prepare("SELECT * FROM registration ORDER BY order_id DESC").all();
+}
+
+function getLastSync() {
+  return db.prepare("SELECT * FROM sync_log ORDER BY id DESC LIMIT 1").get();
+}
+
+// ── WooCommerce Sync ─────────────────────────────────────
+async function syncFromWC() {
+  let totalFetched = 0;
+  let newCount = 0;
+  let page = 1;
+
+  while (true) {
+    const url = new URL(`${WC_API_URL}/wp-json/wc/v3/orders`);
+    url.searchParams.set("consumer_key", WC_CONSUMER_KEY);
+    url.searchParams.set("consumer_secret", WC_CONSUMER_SECRET);
+    url.searchParams.set("per_page", "100");
+    url.searchParams.set("page", String(page));
+    url.searchParams.set("status", "processing,completed");
+    url.searchParams.set("after", "2025-12-01T00:00:00");
+
+    const res = await fetch(url.toString());
+    if (!res.ok) throw new Error(`WC API error: ${res.status}`);
+
+    const orders = await res.json();
+    if (orders.length === 0) break;
+
+    for (const order of orders) {
+      const name = getMeta(order.meta_data, "first_and_last_name");
+      const email = order.billing?.email?.toLowerCase().trim() || "";
+      const country = convertCountry(order.billing?.country);
+
+      for (const item of order.line_items) {
+        const product = PRODUCT_MAP[item.product_id];
+        if (!product) continue;
+
+        totalFetched++;
+        const membership = getMeta(item.meta_data, "membership");
+        const compClass = getMeta(item.meta_data, "comp-class").toLowerCase();
+
+        const result = insertReg.run(
+          order.id,
+          name || email,
+          email,
+          country,
+          product.name,
+          product.type,
+          membership === "Non-Member" ? "Non-Member" : "Member",
+          compClass || null,
+          getMeta(item.meta_data, "wing-1") || null,
+          getMeta(item.meta_data, "wing-1-size") || null,
+          getMeta(item.meta_data, "wing-1-loading") || null,
+          getMeta(item.meta_data, "degree-of-turn") || null,
+          item.total || "0",
+          order.date_created
+        );
+        if (result.changes > 0) newCount++;
+      }
+    }
+
+    page++;
+  }
+
+  insertSync.run(totalFetched, newCount);
+  return { totalFetched, newCount };
+}
+
+// ── CSV Generation ───────────────────────────────────────
+function escapeCSV(val) {
+  const str = val == null ? "" : String(val);
+  if (str.includes(",") || str.includes('"') || str.includes("\n")) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+function generateAllCSV(registrations, eventFilter) {
+  const filtered = eventFilter
+    ? registrations.filter((r) => r.event === eventFilter)
+    : registrations;
+
+  const headers = [
+    "Name", "Email", "Event", "Membership", "Class", "Wing Type", "Wing Size",
+    "Wing Loading", "Degree of Turn", "Country", "Price", "Order #", "Date",
+  ];
+
+  const rows = filtered.map((r) =>
+    [
+      r.name, r.email, r.event, r.membership, r.comp_class, r.wing_type,
+      r.wing_size, r.wing_loading, r.degree_of_turn, r.country, r.price_paid,
+      r.order_id, r.order_date,
+    ].map(escapeCSV).join(",")
+  );
+
+  return [headers.join(","), ...rows].join("\n");
+}
+
+function generateInTimeCSV(registrations, eventFilter) {
+  const filtered = registrations.filter(
+    (r) => (r.event_type === "meet" || r.event_type === "freestyle") &&
+           (!eventFilter || r.event === eventFilter)
+  );
+
+  const classBase = { sport: 100, intermediate: 200, advanced: 300, pro: 400 };
+  const classAbbrev = { sport: "SPT", intermediate: "INT", advanced: "ADV", pro: "OPEN" };
+
+  const byEvent = {};
+  for (const r of filtered) {
+    if (!byEvent[r.event]) byEvent[r.event] = [];
+    byEvent[r.event].push(r);
+  }
+
+  const rows = [];
+  for (const [eventName, regs] of Object.entries(byEvent)) {
+    const classBuckets = {};
+    for (const r of regs) {
+      const cls = r.comp_class || "intermediate";
+      if (!classBuckets[cls]) classBuckets[cls] = [];
+      classBuckets[cls].push(r);
+    }
+
+    for (const [cls, clsRegs] of Object.entries(classBuckets)) {
+      const base = classBase[cls] || 200;
+      const abbrev = classAbbrev[cls] || cls.toUpperCase();
+      const countrySeen = {};
+      let nextNo = base;
+
+      for (const r of clsRegs) {
+        const country = r.country || "USA";
+        if (!(country in countrySeen)) {
+          countrySeen[country] = nextNo;
+          nextNo++;
+        }
+        const teamNo = countrySeen[country];
+
+        const meetMatch = eventName.match(/#(\d+)/);
+        const meetNum = meetMatch ? meetMatch[1] : "1";
+        const year = new Date().getFullYear();
+        const teamName = country === "USA"
+          ? `${year} ${meetNum} ${abbrev}`
+          : `${country} ${year} ${meetNum} ${abbrev}`;
+
+        const fullName = r.name || "";
+        const lastSpace = fullName.lastIndexOf(" ");
+        const firstName = lastSpace > 0 ? fullName.substring(0, lastSpace) : fullName;
+        const surname = lastSpace > 0 ? fullName.substring(lastSpace + 1) : "";
+
+        const q = (v) => `"${String(v).replace(/"/g, '""')}"`;
+        rows.push(
+          [q(country), q(teamNo), q(teamName), q(firstName), q(surname), q(""), q("")].join(",")
+        );
+      }
+    }
+  }
+
+  const header = "Nation,TeamNo,TeamName,TeamMemberFirstName,TeamMemberSurname,IsVideographer,AssociationNo";
+  return [header, ...rows].join("\n");
+}
+
+// ── HTML ─────────────────────────────────────────────────
+function getHTML() {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>USCPA WooCommerce Export</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a1a; color: #ededed; }
+    .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+    h1 { color: #00d4ff; font-size: 28px; margin-bottom: 5px; }
+    .subtitle { color: #888; font-size: 14px; margin-bottom: 20px; }
+    .sync-info { color: #555; font-size: 12px; margin-bottom: 15px; }
+    .sync-info span { color: #888; }
+    .controls { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; align-items: center; }
+    button { padding: 10px 20px; border-radius: 8px; border: none; font-weight: 700; font-size: 13px; cursor: pointer; transition: opacity 0.2s; }
+    button:hover { opacity: 0.85; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-sync { background: #00d4ff; color: #000; }
+    .btn-csv { background: #ffc107; color: #000; }
+    .btn-intime { background: #28a745; color: #fff; }
+    .tabs { display: flex; gap: 2px; border-bottom: 1px solid #2a2a4a; margin-bottom: 20px; overflow-x: auto; }
+    .tab { padding: 10px 18px; font-size: 13px; font-weight: 500; color: #888; cursor: pointer; border: none; background: none; border-bottom: 2px solid transparent; transition: all 0.2s; white-space: nowrap; }
+    .tab:hover { color: #ccc; }
+    .tab.active { color: #00d4ff; border-bottom-color: #00d4ff; }
+    .tab .tab-count { background: #2a2a4a; color: #aaa; font-size: 10px; padding: 1px 6px; border-radius: 8px; margin-left: 6px; }
+    .tab.active .tab-count { background: #00d4ff33; color: #00d4ff; }
+    .stats { display: flex; gap: 15px; margin-bottom: 20px; }
+    .stat { background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 10px; padding: 15px 20px; min-width: 120px; }
+    .stat-label { color: #888; font-size: 11px; text-transform: uppercase; }
+    .stat-value { font-size: 24px; font-weight: 700; margin-top: 4px; }
+    .stat-value.cyan { color: #00d4ff; }
+    .stat-value.gold { color: #ffc107; }
+    .stat-value.green { color: #28a745; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; padding: 10px 12px; color: #888; font-weight: 500; border-bottom: 1px solid #2a2a4a; background: #16213e; position: sticky; top: 0; }
+    td { padding: 8px 12px; border-bottom: 1px solid #1a1a2e; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+    .badge-meet { background: #00d4ff22; color: #00d4ff; }
+    .badge-league { background: #ffc10722; color: #ffc107; }
+    .badge-team { background: #28a74522; color: #28a745; }
+    .badge-freestyle { background: #ff69b422; color: #ff69b4; }
+    .empty { text-align: center; padding: 60px; color: #555; }
+    .table-wrap { background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 10px; overflow: auto; max-height: 70vh; }
+    .error { background: #ff000015; border: 1px solid #ff000050; color: #ff6b6b; padding: 12px; border-radius: 8px; margin-bottom: 15px; font-size: 13px; }
+    .toast { position: fixed; bottom: 20px; right: 20px; background: #1a1a2e; border: 1px solid #28a745; color: #28a745; padding: 12px 20px; border-radius: 8px; font-size: 13px; display: none; z-index: 100; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>USCPA WooCommerce Export</h1>
+    <p class="subtitle">Pull 2026 registrations from swoopleague.com and export CSV files</p>
+    <div class="sync-info" id="syncInfo"></div>
+
+    <div id="error"></div>
+
+    <div class="controls">
+      <button class="btn-sync" id="syncBtn" onclick="syncData()">Sync from WooCommerce</button>
+      <button class="btn-csv" onclick="downloadCSV('all')">Download CSV</button>
+      <button class="btn-intime" onclick="downloadCSV('intime')">Download InTime CSV</button>
+    </div>
+
+    <div class="tabs" id="tabs" style="display:none"></div>
+
+    <div class="stats" id="stats" style="display:none">
+      <div class="stat"><div class="stat-label">Total</div><div class="stat-value cyan" id="statTotal">0</div></div>
+      <div class="stat"><div class="stat-label">Meets</div><div class="stat-value gold" id="statMeets">0</div></div>
+      <div class="stat"><div class="stat-label">League</div><div class="stat-value green" id="statLeague">0</div></div>
+      <div class="stat"><div class="stat-label">Competitors</div><div class="stat-value" id="statPeople">0</div></div>
+    </div>
+
+    <div class="table-wrap">
+      <div class="empty" id="emptyMsg">Loading...</div>
+      <table id="dataTable" style="display:none">
+        <thead>
+          <tr>
+            <th>Name</th><th>Email</th><th>Event</th><th>Class</th>
+            <th>Wing</th><th>Country</th><th>Price</th><th>Order</th>
+          </tr>
+        </thead>
+        <tbody id="tableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    let allData = [];
+    let activeTab = "";
+
+    // Load cached data on page open
+    loadCached();
+
+    async function loadCached() {
+      try {
+        const res = await fetch("/api/data");
+        if (!res.ok) throw new Error(await res.text());
+        const result = await res.json();
+        allData = result.registrations;
+        if (allData.length > 0) {
+          buildTabs();
+          renderTable();
+          updateStats();
+          document.getElementById("stats").style.display = "flex";
+          document.getElementById("tabs").style.display = "flex";
+        } else {
+          document.getElementById("emptyMsg").textContent = 'No data yet. Click "Sync from WooCommerce" to pull registrations.';
+        }
+        if (result.lastSync) {
+          document.getElementById("syncInfo").innerHTML = 'Last sync: <span>' + new Date(result.lastSync.synced_at + 'Z').toLocaleString() + '</span> (' + result.lastSync.new_registrations + ' new)';
+        }
+      } catch (e) {
+        document.getElementById("emptyMsg").textContent = "Failed to load cached data";
+      }
+    }
+
+    async function syncData() {
+      const btn = document.getElementById("syncBtn");
+      btn.disabled = true;
+      btn.textContent = "Syncing...";
+      document.getElementById("error").innerHTML = "";
+
+      try {
+        const res = await fetch("/api/sync", { method: "POST" });
+        if (!res.ok) throw new Error(await res.text());
+        const result = await res.json();
+
+        // Reload data from DB
+        await loadCached();
+
+        // Show toast
+        const toast = document.getElementById("toast");
+        toast.textContent = result.newCount > 0
+          ? result.newCount + " new registration(s) added!"
+          : "Already up to date. No new registrations.";
+        toast.style.display = "block";
+        setTimeout(() => toast.style.display = "none", 4000);
+      } catch (e) {
+        document.getElementById("error").innerHTML = '<div class="error">' + e.message + '</div>';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Sync from WooCommerce";
+      }
+    }
+
+    function buildTabs() {
+      const tabsEl = document.getElementById("tabs");
+      const events = [...new Set(allData.map(r => r.event))];
+      const order = { meet: 1, freestyle: 2, league: 3, team: 4 };
+      const eventInfo = events.map(e => {
+        const r = allData.find(d => d.event === e);
+        return { name: e, type: r?.event_type || "meet", count: allData.filter(d => d.event === e).length };
+      }).sort((a, b) => (order[a.type] || 5) - (order[b.type] || 5));
+
+      const shortName = (name) => name.replace(' Registration 2026', '').replace(' 2026', '');
+
+      let html = '<button class="tab active" data-event="" onclick="setTab(this)">All<span class="tab-count">' + allData.length + '</span></button>';
+      eventInfo.forEach(e => {
+        const escaped = e.name.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+        html += '<button class="tab" data-event="' + escaped + '" onclick="setTab(this)">' + shortName(e.name) + '<span class="tab-count">' + e.count + '</span></button>';
+      });
+      tabsEl.innerHTML = html;
+    }
+
+    function setTab(el) {
+      activeTab = el.dataset.event;
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      el.classList.add('active');
+      renderTable();
+      updateStats();
+    }
+
+    function getFiltered() {
+      return activeTab ? allData.filter(r => r.event === activeTab) : allData;
+    }
+
+    function renderTable() {
+      const filtered = getFiltered();
+      const tbody = document.getElementById("tableBody");
+      const table = document.getElementById("dataTable");
+      const empty = document.getElementById("emptyMsg");
+
+      if (filtered.length === 0) {
+        table.style.display = "none";
+        empty.textContent = allData.length ? "No registrations for this event" : "No data loaded";
+        empty.style.display = "block";
+        return;
+      }
+
+      empty.style.display = "none";
+      table.style.display = "table";
+
+      const badgeClass = (type) => {
+        if (type === "meet") return "badge-meet";
+        if (type === "league") return "badge-league";
+        if (type === "team") return "badge-team";
+        return "badge-freestyle";
+      };
+
+      tbody.innerHTML = filtered.map(r => \`<tr>
+        <td>\${r.name}</td>
+        <td style="color:#888">\${r.email}</td>
+        <td><span class="badge \${badgeClass(r.event_type)}">\${r.event.replace(' Registration 2026','').replace(' 2026','')}</span></td>
+        <td>\${r.comp_class || ''}</td>
+        <td>\${r.wing_type ? r.wing_type + ' ' + (r.wing_size || '') : ''}</td>
+        <td>\${r.country || ''}</td>
+        <td>$\${r.price_paid || '0'}</td>
+        <td style="color:#888">#\${r.order_id}</td>
+      </tr>\`).join("");
+    }
+
+    function updateStats() {
+      const filtered = getFiltered();
+      document.getElementById("statTotal").textContent = filtered.length;
+      document.getElementById("statMeets").textContent = filtered.filter(r => r.event_type === "meet" || r.event_type === "freestyle").length;
+      document.getElementById("statLeague").textContent = filtered.filter(r => r.event_type === "league").length;
+      document.getElementById("statPeople").textContent = new Set(filtered.map(r => r.email)).size;
+    }
+
+    function downloadCSV(type) {
+      if (!allData.length) { alert("No data. Sync first."); return; }
+      const params = new URLSearchParams({ type, event: activeTab });
+      window.location.href = "/api/csv?" + params.toString();
+    }
+  </script>
+</body>
+</html>`;
+}
+
+// ── HTTP Server ──────────────────────────────────────────
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, `http://localhost:${PORT}`);
+
+  if (url.pathname === "/" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(getHTML());
+    return;
+  }
+
+  // Return cached data from DB
+  if (url.pathname === "/api/data" && req.method === "GET") {
+    const registrations = getAllFromDB();
+    const lastSync = getLastSync();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ registrations, lastSync }));
+    return;
+  }
+
+  // Sync new data from WooCommerce into DB
+  if (url.pathname === "/api/sync" && req.method === "POST") {
+    try {
+      const result = await syncFromWC();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+    } catch (e) {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end(e.message);
+    }
+    return;
+  }
+
+  // CSV export from DB (no WC fetch needed)
+  if (url.pathname === "/api/csv" && req.method === "GET") {
+    const data = getAllFromDB();
+    const type = url.searchParams.get("type") || "all";
+    const eventFilter = url.searchParams.get("event") || "";
+
+    let csv, filename;
+    if (type === "intime") {
+      csv = generateInTimeCSV(data, eventFilter);
+      const safeName = eventFilter
+        ? eventFilter.replace(/[^a-zA-Z0-9]/g, "_")
+        : "all_events";
+      filename = `${safeName}_intime.csv`;
+    } else {
+      csv = generateAllCSV(data, eventFilter);
+      const safeName = eventFilter
+        ? eventFilter.replace(/[^a-zA-Z0-9]/g, "_")
+        : "all_registrations";
+      filename = `${safeName}.csv`;
+    }
+
+    res.writeHead(200, {
+      "Content-Type": "text/csv",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+    });
+    res.end(csv);
+    return;
+  }
+
+  res.writeHead(404);
+  res.end("Not found");
+});
+
+server.listen(PORT, () => {
+  const count = db.prepare("SELECT COUNT(*) as c FROM registration").get().c;
+  console.log(`\nUSCPA WooCommerce Export Tool`);
+  console.log(`Running at http://localhost:${PORT}`);
+  console.log(`Database: ${DB_PATH} (${count} registrations cached)\n`);
+});

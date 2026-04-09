@@ -1,0 +1,4 @@
+node_modules/
+registrations.db
+registrations.db-wal
+registrations.db-shm
