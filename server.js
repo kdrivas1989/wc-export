@@ -676,7 +676,7 @@ function getHTML() {
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
           <input class="mc-name" placeholder="Full name *" style="padding:7px 10px;border-radius:6px;border:1px solid #2a2a4a;background:#16213e;color:#ededed;font-size:13px">
-          <input class="mc-email" type="email" placeholder="Email *" style="padding:7px 10px;border-radius:6px;border:1px solid #2a2a4a;background:#16213e;color:#ededed;font-size:13px">
+          <input class="mc-email" type="email" placeholder="Email (optional)" style="padding:7px 10px;border-radius:6px;border:1px solid #2a2a4a;background:#16213e;color:#ededed;font-size:13px">
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
           <select class="mc-class" style="padding:7px 10px;border-radius:6px;border:1px solid #2a2a4a;background:#16213e;color:#ededed;font-size:13px">
@@ -716,8 +716,8 @@ function getHTML() {
       for (const div of compDivs) {
         const name = div.querySelector(".mc-name").value.trim();
         const email = div.querySelector(".mc-email").value.trim();
-        if (!name || !email) {
-          document.getElementById("manualError").textContent = "All competitors need a name and email.";
+        if (!name) {
+          document.getElementById("manualError").textContent = "All competitors need a name.";
           return;
         }
         competitors.push({
