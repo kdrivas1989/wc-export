@@ -66,6 +66,8 @@ db.exec(`
     price_paid TEXT,
     order_date TEXT,
     synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+    source TEXT NOT NULL DEFAULT 'woocommerce',
+    payment_method TEXT,
     UNIQUE(order_id, event)
   );
 
@@ -77,9 +79,19 @@ db.exec(`
   );
 `);
 
+// Migrate existing DBs
+const cols = db.prepare("PRAGMA table_info(registration)").all().map(c => c.name);
+if (!cols.includes("source")) db.exec("ALTER TABLE registration ADD COLUMN source TEXT NOT NULL DEFAULT 'woocommerce'");
+if (!cols.includes("payment_method")) db.exec("ALTER TABLE registration ADD COLUMN payment_method TEXT");
+
 const insertReg = db.prepare(`
   INSERT OR IGNORE INTO registration (order_id, name, email, country, event, event_type, membership, comp_class, wing_type, wing_size, wing_loading, degree_of_turn, price_paid, order_date)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+
+const insertManual = db.prepare(`
+  INSERT INTO registration (order_id, name, email, country, event, event_type, membership, comp_class, wing_type, wing_size, wing_loading, degree_of_turn, price_paid, order_date, source, payment_method)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 'manual', ?)
 `);
 
 const insertSync = db.prepare(`
@@ -296,6 +308,19 @@ function getHTML() {
     .table-wrap { background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 10px; overflow: auto; max-height: 70vh; }
     .error { background: #ff000015; border: 1px solid #ff000050; color: #ff6b6b; padding: 12px; border-radius: 8px; margin-bottom: 15px; font-size: 13px; }
     .toast { position: fixed; bottom: 20px; right: 20px; background: #1a1a2e; border: 1px solid #28a745; color: #28a745; padding: 12px 20px; border-radius: 8px; font-size: 13px; display: none; z-index: 100; }
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 50; display: none; align-items: center; justify-content: center; }
+    .modal-overlay.open { display: flex; }
+    .modal { background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 12px; padding: 24px; width: 90%; max-width: 600px; max-height: 90vh; overflow-y: auto; }
+    .modal h2 { color: #00d4ff; font-size: 20px; margin-bottom: 16px; }
+    .modal label { display: block; color: #aaa; font-size: 12px; margin-bottom: 4px; margin-top: 12px; }
+    .modal input, .modal select { width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid #2a2a4a; background: #16213e; color: #ededed; font-size: 13px; }
+    .modal input:focus, .modal select:focus { outline: none; border-color: #00d4ff; }
+    .modal .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .modal .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+    .btn-add { background: #ff69b4; color: #000; }
+    .btn-cancel { background: #333; color: #aaa; }
+    .btn-save { background: #28a745; color: #fff; }
+    .badge-manual { background: #ff69b422; color: #ff69b4; }
   </style>
 </head>
 <body>
@@ -308,6 +333,7 @@ function getHTML() {
 
     <div class="controls">
       <button class="btn-sync" id="syncBtn" onclick="syncData()">Sync from WooCommerce</button>
+      <button class="btn-add" onclick="openManual()">+ Manual Entry</button>
       <button class="btn-csv" onclick="downloadCSV('all')">Download CSV</button>
       <button class="btn-intime" onclick="downloadCSV('intime')">Download InTime CSV</button>
     </div>
@@ -336,6 +362,94 @@ function getHTML() {
   </div>
 
   <div class="toast" id="toast"></div>
+
+  <div class="modal-overlay" id="manualModal">
+    <div class="modal">
+      <h2>Manual Registration</h2>
+      <div class="row">
+        <div><label>Name *</label><input id="mName" placeholder="Full name"></div>
+        <div><label>Email *</label><input id="mEmail" type="email" placeholder="email@example.com"></div>
+      </div>
+      <div class="row">
+        <div>
+          <label>Event *</label>
+          <select id="mEvent">
+            <option value="">Select event...</option>
+            <option value="Meet #1 Registration 2026">Meet #1</option>
+            <option value="Meet #2 Registration 2026">Meet #2</option>
+            <option value="Meet #3 Registration 2026">Meet #3</option>
+            <option value="Meet #4 Registration 2026">Meet #4</option>
+            <option value="Meet #5 Registration 2026">Meet #5</option>
+            <option value="Pilots of the Caribbean 2026">Pilots of the Caribbean</option>
+            <option value="League Registration 2026">League Registration</option>
+            <option value="Team Registration 2026">Team Registration</option>
+          </select>
+        </div>
+        <div>
+          <label>Country</label>
+          <select id="mCountry">
+            <option value="USA">United States</option>
+            <option value="CAN">Canada</option>
+            <option value="GBR">United Kingdom</option>
+            <option value="AUS">Australia</option>
+            <option value="GER">Germany</option>
+            <option value="FRA">France</option>
+            <option value="BRA">Brazil</option>
+            <option value="ARG">Argentina</option>
+            <option value="MEX">Mexico</option>
+            <option value="ISR">Israel</option>
+            <option value="OTHER">Other</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>Comp Class</label>
+          <select id="mClass">
+            <option value="">N/A</option>
+            <option value="sport">Sport</option>
+            <option value="intermediate">Intermediate</option>
+            <option value="advanced">Advanced</option>
+            <option value="pro">Pro</option>
+          </select>
+        </div>
+        <div>
+          <label>Membership</label>
+          <select id="mMembership">
+            <option value="Member">Member</option>
+            <option value="Non-Member">Non-Member</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div><label>Wing Type</label><input id="mWing" placeholder="e.g. Valkyrie"></div>
+        <div><label>Wing Size</label><input id="mSize" placeholder="e.g. 71"></div>
+      </div>
+      <div class="row">
+        <div><label>Wing Loading</label><input id="mLoading" placeholder="e.g. 2.5"></div>
+        <div><label>Degree of Turn</label><input id="mTurn" placeholder="e.g. 270"></div>
+      </div>
+      <div class="row">
+        <div><label>Amount Paid</label><input id="mPrice" placeholder="e.g. 75.00"></div>
+        <div>
+          <label>Payment Method</label>
+          <select id="mPayment">
+            <option value="cash">Cash</option>
+            <option value="check">Check</option>
+            <option value="venmo">Venmo</option>
+            <option value="zelle">Zelle</option>
+            <option value="comp">Comp / Free</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+      </div>
+      <div id="manualError" style="color:#ff6b6b;font-size:12px;margin-top:8px"></div>
+      <div class="actions">
+        <button class="btn-cancel" onclick="closeManual()">Cancel</button>
+        <button class="btn-save" onclick="saveManual()">Save Registration</button>
+      </div>
+    </div>
+  </div>
 
   <script>
     let allData = [];
@@ -475,6 +589,63 @@ function getHTML() {
       const params = new URLSearchParams({ type, event: activeTab });
       window.location.href = "/api/csv?" + params.toString();
     }
+
+    function openManual() {
+      document.getElementById("manualModal").classList.add("open");
+      document.getElementById("manualError").textContent = "";
+    }
+
+    function closeManual() {
+      document.getElementById("manualModal").classList.remove("open");
+    }
+
+    async function saveManual() {
+      const name = document.getElementById("mName").value.trim();
+      const email = document.getElementById("mEmail").value.trim();
+      const event = document.getElementById("mEvent").value;
+      if (!name || !email || !event) {
+        document.getElementById("manualError").textContent = "Name, email, and event are required.";
+        return;
+      }
+
+      const eventTypes = {
+        "Meet #1 Registration 2026": "meet", "Meet #2 Registration 2026": "meet",
+        "Meet #3 Registration 2026": "meet", "Meet #4 Registration 2026": "meet",
+        "Meet #5 Registration 2026": "meet", "Pilots of the Caribbean 2026": "freestyle",
+        "League Registration 2026": "league", "Team Registration 2026": "team",
+      };
+
+      const body = {
+        name, email, event,
+        event_type: eventTypes[event] || "meet",
+        country: document.getElementById("mCountry").value,
+        membership: document.getElementById("mMembership").value,
+        comp_class: document.getElementById("mClass").value,
+        wing_type: document.getElementById("mWing").value.trim(),
+        wing_size: document.getElementById("mSize").value.trim(),
+        wing_loading: document.getElementById("mLoading").value.trim(),
+        degree_of_turn: document.getElementById("mTurn").value.trim(),
+        price_paid: document.getElementById("mPrice").value.trim() || "0",
+        payment_method: document.getElementById("mPayment").value,
+      };
+
+      try {
+        const res = await fetch("/api/manual", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
+        if (!res.ok) throw new Error(await res.text());
+        closeManual();
+        // Clear form
+        ["mName","mEmail","mWing","mSize","mLoading","mTurn","mPrice"].forEach(id => document.getElementById(id).value = "");
+        document.getElementById("mEvent").value = "";
+        document.getElementById("mClass").value = "";
+        await loadCached();
+        const toast = document.getElementById("toast");
+        toast.textContent = "Manual registration added for " + name;
+        toast.style.display = "block";
+        setTimeout(() => toast.style.display = "none", 4000);
+      } catch (e) {
+        document.getElementById("manualError").textContent = e.message;
+      }
+    }
   </script>
 </body>
 </html>`;
@@ -505,6 +676,51 @@ const server = http.createServer(async (req, res) => {
       const result = await syncFromWC();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(result));
+    } catch (e) {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end(e.message);
+    }
+    return;
+  }
+
+  // Manual registration
+  if (url.pathname === "/api/manual" && req.method === "POST") {
+    try {
+      const body = await new Promise((resolve, reject) => {
+        let data = "";
+        req.on("data", (c) => (data += c));
+        req.on("end", () => { try { resolve(JSON.parse(data)); } catch { reject(new Error("Invalid JSON")); } });
+      });
+
+      if (!body.name || !body.email || !body.event) {
+        res.writeHead(400, { "Content-Type": "text/plain" });
+        res.end("Name, email, and event are required");
+        return;
+      }
+
+      // Use negative order_id for manual entries (won't collide with WC order IDs)
+      const maxManual = db.prepare("SELECT MIN(order_id) as m FROM registration WHERE source = 'manual'").get();
+      const manualId = Math.min((maxManual?.m || 0) - 1, -1);
+
+      insertManual.run(
+        manualId,
+        body.name,
+        body.email.toLowerCase().trim(),
+        body.country || "USA",
+        body.event,
+        body.event_type || "meet",
+        body.membership || "Member",
+        body.comp_class || null,
+        body.wing_type || null,
+        body.wing_size || null,
+        body.wing_loading || null,
+        body.degree_of_turn || null,
+        body.price_paid || "0",
+        body.payment_method || "cash"
+      );
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
     } catch (e) {
       res.writeHead(500, { "Content-Type": "text/plain" });
       res.end(e.message);
