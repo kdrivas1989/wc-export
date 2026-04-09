@@ -393,6 +393,9 @@ function getHTML() {
     .btn-cancel { background: #333; color: #aaa; }
     .btn-save { background: #28a745; color: #fff; }
     .badge-manual { background: #ff69b422; color: #ff69b4; }
+    .editable { cursor: pointer; border-bottom: 1px dashed #333; padding-bottom: 1px; }
+    .editable:hover { border-bottom-color: #00d4ff; color: #00d4ff; }
+    .edit-input { padding: 4px 8px; border-radius: 4px; border: 1px solid #00d4ff; background: #16213e; color: #ededed; font-size: 13px; width: 100%; }
   </style>
 </head>
 <body>
@@ -430,7 +433,7 @@ function getHTML() {
         <thead>
           <tr>
             <th>Name</th><th>Email</th><th>Event</th><th>Class</th>
-            <th>Wing</th><th>Country</th><th>Price</th><th>Order</th>
+            <th>Wing</th><th>Team</th><th>Country</th><th>Price</th><th>Order</th>
           </tr>
         </thead>
         <tbody id="tableBody"></tbody>
@@ -627,12 +630,13 @@ function getHTML() {
       };
 
       tbody.innerHTML = filtered.map(r => \`<tr>
-        <td>\${r.name}</td>
+        <td><span class="editable" onclick="editField(this,\${r.id},'name')">\${r.name}</span></td>
         <td style="color:#888">\${r.email}</td>
         <td><span class="badge \${badgeClass(r.event_type)}">\${r.event.replace(' Registration 2026','').replace(' 2026','')}</span></td>
         <td>\${r.comp_class || ''}</td>
         <td>\${r.wing_type ? r.wing_type + ' ' + (r.wing_size || '') : ''}</td>
-        <td>\${r.country || ''}</td>
+        <td><span class="editable" onclick="editField(this,\${r.id},'team_name')">\${r.team_name || (r.event_type === 'team' ? '<span style=color:#555>click to set</span>' : '')}</span></td>
+        <td><span class="editable" onclick="editField(this,\${r.id},'country')">\${r.country || ''}</span></td>
         <td>$\${r.price_paid || '0'}</td>
         <td style="color:#888">#\${r.order_id}</td>
       </tr>\`).join("");
@@ -644,6 +648,33 @@ function getHTML() {
       document.getElementById("statMeets").textContent = filtered.filter(r => r.event_type === "meet" || r.event_type === "freestyle").length;
       document.getElementById("statLeague").textContent = filtered.filter(r => r.event_type === "league").length;
       document.getElementById("statPeople").textContent = new Set(filtered.map(r => r.email)).size;
+    }
+
+    function editField(el, id, field) {
+      const current = el.textContent === 'click to set' ? '' : el.textContent;
+      const td = el.parentElement;
+      td.innerHTML = '<input class="edit-input" value="' + current.replace(/"/g, '&quot;') + '" onblur="saveField(this,' + id + ',\\'' + field + '\\')" onkeydown="if(event.key===\\'Enter\\')this.blur();if(event.key===\\'Escape\\'){this.dataset.cancel=\\'1\\';this.blur();}">';
+      td.querySelector('input').focus();
+    }
+
+    async function saveField(input, id, field) {
+      if (input.dataset.cancel) {
+        await loadCached();
+        return;
+      }
+      const value = input.value.trim();
+      try {
+        const res = await fetch('/api/update', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ id, field, value })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        await loadCached();
+      } catch(e) {
+        alert('Failed to save: ' + e.message);
+        await loadCached();
+      }
     }
 
     function downloadCSV(type) {
@@ -921,6 +952,33 @@ const server = http.createServer(async (req, res) => {
 
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true, count }));
+    } catch (e) {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end(e.message);
+    }
+    return;
+  }
+
+  // Update a field on a registration
+  if (url.pathname === "/api/update" && req.method === "POST") {
+    try {
+      const body = await new Promise((resolve, reject) => {
+        let data = "";
+        req.on("data", (c) => (data += c));
+        req.on("end", () => { try { resolve(JSON.parse(data)); } catch { reject(new Error("Invalid JSON")); } });
+      });
+
+      const allowed = ["name", "country", "team_name", "comp_class", "email"];
+      if (!allowed.includes(body.field)) {
+        res.writeHead(400, { "Content-Type": "text/plain" });
+        res.end("Field not editable");
+        return;
+      }
+
+      db.prepare(`UPDATE registration SET ${body.field} = ? WHERE id = ?`).run(body.value || null, body.id);
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
     } catch (e) {
       res.writeHead(500, { "Content-Type": "text/plain" });
       res.end(e.message);
