@@ -10,17 +10,18 @@ const crypto = require("crypto");
 
 // Simple session store
 const sessions = new Map();
-function createSession() {
+function createSession(remember) {
   const token = crypto.randomBytes(32).toString("hex");
-  sessions.set(token, { created: Date.now() });
+  sessions.set(token, { created: Date.now(), remember });
   return token;
 }
 function isValidSession(token) {
   if (!token) return false;
   const session = sessions.get(token);
   if (!session) return false;
-  // 24 hour expiry
-  if (Date.now() - session.created > 86400000) { sessions.delete(token); return false; }
+  // 30 day expiry for remember me, 24hr otherwise
+  const maxAge = session.remember ? 2592000000 : 86400000;
+  if (Date.now() - session.created > maxAge) { sessions.delete(token); return false; }
   return true;
 }
 function getCookie(req, name) {
@@ -59,6 +60,7 @@ function getLoginHTML() {
       <input name="email" type="email" placeholder="Email" required>
       <label>Password</label>
       <input name="password" type="password" placeholder="Password" required>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:16px;cursor:pointer"><input type="checkbox" name="remember" value="1" checked> <span style="font-size:13px;color:#aaa">Remember me</span></label>
       <button type="submit">Sign In</button>
     </form>
   </div>
@@ -777,10 +779,12 @@ const server = http.createServer(async (req, res) => {
     const password = params.get("password");
 
     if (email === ADMIN_EMAIL.toLowerCase() && password === ADMIN_PASSWORD) {
-      const token = createSession();
+      const remember = params.get("remember") === "1";
+      const token = createSession(remember);
+      const maxAge = remember ? 2592000 : 86400;
       res.writeHead(302, {
         Location: "/",
-        "Set-Cookie": `session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`,
+        "Set-Cookie": `session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`,
       });
       res.end();
     } else {
