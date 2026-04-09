@@ -635,7 +635,7 @@ function getHTML() {
         <td><span class="badge \${badgeClass(r.event_type)}">\${r.event.replace(' Registration 2026','').replace(' 2026','')}</span></td>
         <td>\${r.comp_class || ''}</td>
         <td>\${r.wing_type ? r.wing_type + ' ' + (r.wing_size || '') : ''}</td>
-        <td><span class="editable" onclick="editField(this,\${r.id},'team_name')">\${r.team_name || (r.event_type === 'team' ? '<span style=color:#555>click to set</span>' : '')}</span></td>
+        <td><span class="editable" onclick="editField(this,\${r.id},'team_name')">\${r.team_name || '<span style=color:#555>—</span>'}</span></td>
         <td><span class="editable" onclick="editField(this,\${r.id},'country')">\${r.country || ''}</span></td>
         <td>$\${r.price_paid || '0'}</td>
         <td style="color:#888">#\${r.order_id}</td>
