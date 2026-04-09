@@ -76,15 +76,21 @@ const WC_CONSUMER_SECRET = "cs_354183e905402122379286042090a99104534c59";
 
 // 2026 product ID → event mapping
 const PRODUCT_MAP = {
-  9879: { name: "Meet #1 Registration 2026", type: "meet" },
-  9883: { name: "Meet #2 Registration 2026", type: "meet" },
-  9888: { name: "Meet #3 Registration 2026", type: "meet" },
-  9892: { name: "Meet #4 Registration 2026", type: "meet" },
-  9900: { name: "Meet #5 Registration 2026", type: "meet" },
-  9904: { name: "Pilots of the Caribbean 2026", type: "freestyle" },
-  9877: { name: "League Registration 2026", type: "league" },
-  9878: { name: "Team Registration 2026", type: "team" },
+  9879: { name: "Meet #1 Registration 2026", type: "meet", date: "2026-03-07", location: "Skydive City, Zephyrhills, FL" },
+  9883: { name: "Meet #2 Registration 2026", type: "meet", date: "2026-04-11", location: "Skydive Sebastian, Sebastian, FL" },
+  9888: { name: "Meet #3 Registration 2026", type: "meet", date: "2026-05-16", location: "Skydive Paraclete XP, Raeford, NC" },
+  9892: { name: "Meet #4 Registration 2026", type: "meet", date: "2026-06-13", location: "West Tennessee Skydiving, Memphis, TN" },
+  9900: { name: "Meet #5 Registration 2026", type: "meet", date: "2026-09-20", location: "Skydive City, Zephyrhills, FL" },
+  9904: { name: "Pilots of the Caribbean 2026", type: "freestyle", date: "2026-07-11", location: "Skydive Beaufort, Beaufort, NC" },
+  9877: { name: "League Registration 2026", type: "league", date: null, location: null },
+  9878: { name: "Team Registration 2026", type: "team", date: null, location: null },
 };
+
+// Event info lookup by name
+const EVENT_INFO = {};
+for (const [, v] of Object.entries(PRODUCT_MAP)) {
+  EVENT_INFO[v.name] = { date: v.date, location: v.location, type: v.type };
+}
 
 const COUNTRY_MAP = {
   US: "USA", CA: "CAN", GB: "GBR", AU: "AUS", NZ: "NZL", ZA: "RSA",
@@ -332,6 +338,116 @@ function generateInTimeCSV(registrations, eventFilter) {
 }
 
 // ── HTML ─────────────────────────────────────────────────
+function getCompetitorsHTML() {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>USCPA 2026 Competitors</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a1a; color: #ededed; }
+    .container { max-width: 1000px; margin: 0 auto; padding: 30px 20px; }
+    h1 { color: #00d4ff; font-size: 32px; text-align: center; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 2px; }
+    .subtitle { color: #888; font-size: 14px; text-align: center; margin-bottom: 40px; }
+    .event { background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 12px; margin-bottom: 24px; overflow: hidden; }
+    .event-header { padding: 20px 24px; border-bottom: 1px solid #2a2a4a; }
+    .event-name { font-size: 20px; font-weight: 700; color: #00d4ff; }
+    .event-meta { color: #888; font-size: 13px; margin-top: 4px; }
+    .event-meta span { margin-right: 16px; }
+    .class-section { padding: 16px 24px; border-bottom: 1px solid #1a1a3a; }
+    .class-section:last-child { border-bottom: none; }
+    .class-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; padding: 3px 10px; border-radius: 4px; display: inline-block; }
+    .class-sport { background: #28a74522; color: #28a745; }
+    .class-intermediate { background: #ffc10722; color: #ffc107; }
+    .class-advanced { background: #ff69b422; color: #ff69b4; }
+    .class-pro { background: #00d4ff22; color: #00d4ff; }
+    .comp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px; }
+    .comp-card { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: #0d1525; border-radius: 6px; }
+    .comp-flag { font-size: 11px; color: #888; background: #16213e; padding: 2px 8px; border-radius: 3px; font-weight: 600; }
+    .comp-name { font-size: 14px; font-weight: 500; }
+    .comp-wing { font-size: 11px; color: #666; }
+    .comp-team { font-size: 11px; color: #00d4ff; }
+    .empty { text-align: center; padding: 80px 20px; color: #555; }
+    .count { color: #666; font-size: 12px; margin-left: 8px; font-weight: 400; }
+    .loading { text-align: center; padding: 80px; color: #888; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>USCPA Competitions 2026</h1>
+    <p class="subtitle">United States Canopy Piloting Association &mdash; Registered Competitors</p>
+    <div id="content"><div class="loading">Loading competitors...</div></div>
+  </div>
+  <script>
+    (async () => {
+      try {
+        const res = await fetch('/api/competitors');
+        const events = await res.json();
+        const content = document.getElementById('content');
+
+        if (events.length === 0) {
+          content.innerHTML = '<div class="empty">No events are live yet. Competitor lists are published on the day of each event.</div>';
+          return;
+        }
+
+        const classOrder = ['pro', 'advanced', 'intermediate', 'sport', ''];
+        const classLabels = { pro: 'Pro / Open', advanced: 'Advanced', intermediate: 'Intermediate', sport: 'Sport', '': 'Unclassified' };
+        const classCSS = { pro: 'class-pro', advanced: 'class-advanced', intermediate: 'class-intermediate', sport: 'class-sport', '': 'class-sport' };
+
+        let html = '';
+        for (const evt of events) {
+          const date = new Date(evt.date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+
+          // Group by class
+          const byClass = {};
+          for (const c of evt.competitors) {
+            const cls = c.compClass || '';
+            if (!byClass[cls]) byClass[cls] = [];
+            byClass[cls].push(c);
+          }
+
+          html += '<div class="event">';
+          html += '<div class="event-header">';
+          html += '<div class="event-name">' + evt.name.replace(' Registration 2026', '').replace(' 2026', '') + '<span class="count">' + evt.competitors.length + ' competitors</span></div>';
+          html += '<div class="event-meta"><span>' + date + '</span><span>' + (evt.location || '') + '</span></div>';
+          html += '</div>';
+
+          for (const cls of classOrder) {
+            const comps = byClass[cls];
+            if (!comps || comps.length === 0) continue;
+
+            // Sort by country then name
+            comps.sort((a, b) => a.country.localeCompare(b.country) || a.name.localeCompare(b.name));
+
+            html += '<div class="class-section">';
+            html += '<div class="class-label ' + (classCSS[cls] || '') + '">' + (classLabels[cls] || cls) + ' (' + comps.length + ')</div>';
+            html += '<div class="comp-grid">';
+            for (const c of comps) {
+              html += '<div class="comp-card">';
+              html += '<span class="comp-flag">' + c.country + '</span>';
+              html += '<div><div class="comp-name">' + c.name + '</div>';
+              if (c.wingType) html += '<div class="comp-wing">' + c.wingType + (c.wingSize ? ' ' + c.wingSize : '') + '</div>';
+              if (c.teamName) html += '<div class="comp-team">Team: ' + c.teamName + '</div>';
+              html += '</div></div>';
+            }
+            html += '</div></div>';
+          }
+
+          html += '</div>';
+        }
+
+        content.innerHTML = html;
+      } catch (e) {
+        document.getElementById('content').innerHTML = '<div class="empty">Failed to load competitors</div>';
+      }
+    })();
+  </script>
+</body>
+</html>`;
+}
+
 function getHTML() {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -855,6 +971,56 @@ const server = http.createServer(async (req, res) => {
       "Set-Cookie": "session=; Path=/; HttpOnly; Max-Age=0",
     });
     res.end();
+    return;
+  }
+
+  // Public competitors page (no login required)
+  if (url.pathname === "/competitors" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(getCompetitorsHTML());
+    return;
+  }
+
+  // Public API for competitors (only returns events on/after their date)
+  if (url.pathname === "/api/competitors" && req.method === "GET") {
+    const today = new Date().toISOString().split("T")[0];
+    const allRegs = getAllFromDB();
+
+    // Group by event, only include events where date <= today
+    const events = {};
+    for (const r of allRegs) {
+      const info = EVENT_INFO[r.event];
+      if (!info || !info.date) continue; // skip league/team (no date)
+      if (info.date > today) continue; // not yet public
+
+      if (!events[r.event]) {
+        events[r.event] = {
+          name: r.event,
+          date: info.date,
+          location: info.location,
+          type: info.type,
+          competitors: [],
+        };
+      }
+
+      // Only add to competitor list if it's a meet/freestyle entry
+      if (r.event_type === "meet" || r.event_type === "freestyle") {
+        events[r.event].competitors.push({
+          name: r.name,
+          country: r.country || "USA",
+          compClass: r.comp_class || "",
+          wingType: r.wing_type || "",
+          wingSize: r.wing_size || "",
+          teamName: r.team_name || "",
+        });
+      }
+    }
+
+    // Sort events by date
+    const sorted = Object.values(events).sort((a, b) => a.date.localeCompare(b.date));
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(sorted));
     return;
   }
 
