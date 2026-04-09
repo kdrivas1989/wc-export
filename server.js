@@ -8,21 +8,22 @@ const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "kdrivas1989@gmail.com";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Bogus714*";
 const crypto = require("crypto");
 
-// Simple session store
-const sessions = new Map();
+// Session store in SQLite (survives restarts)
 function createSession(remember) {
   const token = crypto.randomBytes(32).toString("hex");
-  sessions.set(token, { created: Date.now(), remember });
+  db.prepare("INSERT INTO session (token, remember, created_at) VALUES (?, ?, ?)").run(token, remember ? 1 : 0, Date.now());
   return token;
 }
 function isValidSession(token) {
   if (!token) return false;
-  const session = sessions.get(token);
+  const session = db.prepare("SELECT * FROM session WHERE token = ?").get(token);
   if (!session) return false;
-  // 30 day expiry for remember me, 24hr otherwise
   const maxAge = session.remember ? 2592000000 : 86400000;
-  if (Date.now() - session.created > maxAge) { sessions.delete(token); return false; }
+  if (Date.now() - session.created_at > maxAge) { db.prepare("DELETE FROM session WHERE token = ?").run(token); return false; }
   return true;
+}
+function deleteSession(token) {
+  if (token) db.prepare("DELETE FROM session WHERE token = ?").run(token);
 }
 function getCookie(req, name) {
   const header = req.headers.cookie || "";
@@ -134,6 +135,13 @@ db.exec(`
     UNIQUE(order_id, event)
   );
 
+  CREATE TABLE IF NOT EXISTS session (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token TEXT NOT NULL UNIQUE,
+    remember INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS sync_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     synced_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -146,6 +154,7 @@ db.exec(`
 const cols = db.prepare("PRAGMA table_info(registration)").all().map(c => c.name);
 if (!cols.includes("source")) db.exec("ALTER TABLE registration ADD COLUMN source TEXT NOT NULL DEFAULT 'woocommerce'");
 if (!cols.includes("payment_method")) db.exec("ALTER TABLE registration ADD COLUMN payment_method TEXT");
+if (!cols.includes("team_name")) db.exec("ALTER TABLE registration ADD COLUMN team_name TEXT");
 
 const insertReg = db.prepare(`
   INSERT OR IGNORE INTO registration (order_id, name, email, country, event, event_type, membership, comp_class, wing_type, wing_size, wing_loading, degree_of_turn, price_paid, order_date)
@@ -153,8 +162,8 @@ const insertReg = db.prepare(`
 `);
 
 const insertManual = db.prepare(`
-  INSERT INTO registration (order_id, name, email, country, event, event_type, membership, comp_class, wing_type, wing_size, wing_loading, degree_of_turn, price_paid, order_date, source, payment_method)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 'manual', ?)
+  INSERT INTO registration (order_id, name, email, country, event, event_type, membership, comp_class, wing_type, wing_size, wing_loading, degree_of_turn, price_paid, order_date, source, payment_method, team_name)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 'manual', ?, ?)
 `);
 
 const insertSync = db.prepare(`
@@ -464,7 +473,7 @@ function getHTML() {
           <input type="checkbox" value="League Registration 2026" class="mEvt"> League
         </label>
         <label class="evt-cb" style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0;background:#16213e;padding:6px 12px;border-radius:6px;border:1px solid #2a2a4a;font-size:12px">
-          <input type="checkbox" value="Team Registration 2026" class="mEvt"> Team
+          <input type="checkbox" value="Team Registration 2026" class="mEvt" onchange="toggleTeamName()"> Team
         </label>
       </div>
 
@@ -660,6 +669,13 @@ function getHTML() {
       document.getElementById("manualModal").classList.remove("open");
     }
 
+    function toggleTeamName() {
+      const teamChecked = document.querySelector('.mEvt[value="Team Registration 2026"]')?.checked;
+      document.querySelectorAll('.mc-team-row').forEach(el => {
+        el.style.display = teamChecked ? 'block' : 'none';
+      });
+    }
+
     function toggleAllEvents(checked) {
       const meets = ["Meet #1 Registration 2026","Meet #2 Registration 2026","Meet #3 Registration 2026","Meet #4 Registration 2026","Meet #5 Registration 2026","League Registration 2026"];
       document.querySelectorAll(".mEvt").forEach(cb => {
@@ -671,6 +687,7 @@ function getHTML() {
       const idx = manualCompCount++;
       const div = document.createElement("div");
       div.style.cssText = "background:#0d1525;border:1px solid #2a2a4a;border-radius:8px;padding:12px;margin-bottom:10px;position:relative";
+      const teamChecked = document.querySelector('.mEvt[value="Team Registration 2026"]')?.checked;
       div.innerHTML = \`
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
           <span style="color:#aaa;font-size:11px;font-weight:600">COMPETITOR \${idx + 1}</span>
@@ -702,6 +719,9 @@ function getHTML() {
             <option value="OTHER">Other</option>
           </select>
         </div>
+        <div class="mc-team-row" style="margin-top:8px;display:\${teamChecked ? 'block' : 'none'}">
+          <input class="mc-team" placeholder="Team name" style="width:100%;padding:7px 10px;border-radius:6px;border:1px solid #2a2a4a;background:#16213e;color:#ededed;font-size:13px">
+        </div>
       \`;
       document.getElementById("manualComps").appendChild(div);
     }
@@ -727,6 +747,7 @@ function getHTML() {
           email,
           comp_class: div.querySelector(".mc-class").value,
           country: div.querySelector(".mc-country").value,
+          team_name: div.querySelector(".mc-team")?.value.trim() || "",
         });
       }
 
@@ -797,7 +818,7 @@ const server = http.createServer(async (req, res) => {
   // Logout
   if (url.pathname === "/logout") {
     const token = getCookie(req, "session");
-    if (token) sessions.delete(token);
+    deleteSession(token);
     res.writeHead(302, {
       Location: "/login",
       "Set-Cookie": "session=; Path=/; HttpOnly; Max-Age=0",
@@ -882,7 +903,7 @@ const server = http.createServer(async (req, res) => {
           insertManual.run(
             manualId,
             comp.name,
-            comp.email.toLowerCase().trim(),
+            (comp.email || "").toLowerCase().trim(),
             comp.country || "USA",
             event,
             eventTypes[event] || "meet",
@@ -890,7 +911,8 @@ const server = http.createServer(async (req, res) => {
             comp.comp_class || null,
             null, null, null, null,
             price_paid || "0",
-            payment_method || "cash"
+            payment_method || "cash",
+            comp.team_name || null
           );
           count++;
         }
