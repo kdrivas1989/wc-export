@@ -180,7 +180,18 @@ const insertSync = db.prepare(`
 `);
 
 function getAllFromDB() {
-  return db.prepare("SELECT * FROM registration ORDER BY order_id DESC").all();
+  return db.prepare(`SELECT * FROM registration ORDER BY
+    CASE event
+      WHEN 'Meet #1 Registration 2026' THEN 1
+      WHEN 'Meet #2 Registration 2026' THEN 2
+      WHEN 'Meet #3 Registration 2026' THEN 3
+      WHEN 'Meet #4 Registration 2026' THEN 4
+      WHEN 'Meet #5 Registration 2026' THEN 5
+      WHEN 'Pilots of the Caribbean 2026' THEN 6
+      WHEN 'League Registration 2026' THEN 7
+      WHEN 'Team Registration 2026' THEN 8
+      ELSE 9
+    END, name`).all();
 }
 
 function getLastSync() {
