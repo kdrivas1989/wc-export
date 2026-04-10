@@ -582,10 +582,15 @@ function getHTML() {
       <h2 style="color:#9333ea">Push to KD Scoring</h2>
       <p style="color:#888;font-size:12px;margin-bottom:16px">Send competitors from the selected tab to a KD Scoring competition.</p>
       <div id="pushTabInfo" style="background:#0d1525;padding:10px 14px;border-radius:6px;margin-bottom:16px;font-size:13px;color:#00d4ff"></div>
-      <label style="margin-top:0">Select Competition *</label>
+      <label style="margin-top:0">Push competitors to Competition</label>
       <select id="pushCompSelect" style="width:100%;padding:10px 12px;border-radius:6px;border:1px solid #2a2a4a;background:#16213e;color:#ededed;font-size:13px;margin-top:6px">
         <option value="">Loading competitions...</option>
       </select>
+      <label style="margin-top:12px">Push teams to Season Standings</label>
+      <select id="pushSeasonSelect" style="width:100%;padding:10px 12px;border-radius:6px;border:1px solid #2a2a4a;background:#16213e;color:#ededed;font-size:13px;margin-top:6px">
+        <option value="">None (skip team push)</option>
+      </select>
+      <p style="color:#666;font-size:11px;margin-top:4px">Team registrations with a team name will be pushed as pairs to season standings.</p>
       <div id="pushError" style="color:#ff6b6b;font-size:12px;margin-top:8px"></div>
       <div class="actions">
         <button class="btn-cancel" onclick="closePushModal()">Cancel</button>
@@ -845,13 +850,18 @@ function getHTML() {
       document.getElementById("pushError").textContent = "";
       document.getElementById("pushModal").classList.add("open");
 
-      // Fetch competitions from KD Scoring
+      // Fetch competitions and seasons from KD Scoring
       const sel = document.getElementById("pushCompSelect");
+      const sSel = document.getElementById("pushSeasonSelect");
       sel.innerHTML = '<option value="">Loading...</option>';
+      sSel.innerHTML = '<option value="">None (skip)</option>';
       try {
-        const res = await fetch("/api/kd-competitions");
-        if (!res.ok) throw new Error(await res.text());
-        const comps = await res.json();
+        const [compRes, seasonRes] = await Promise.all([
+          fetch("/api/kd-competitions"),
+          fetch("/api/kd-seasons")
+        ]);
+        if (!compRes.ok) throw new Error(await compRes.text());
+        const comps = await compRes.json();
         sel.innerHTML = '<option value="">Select competition...</option>';
         comps.forEach(c => {
           const opt = document.createElement("option");
@@ -859,6 +869,16 @@ function getHTML() {
           opt.textContent = c.name + " (" + c.competitor_count + " competitors, " + c.status + ")";
           sel.appendChild(opt);
         });
+
+        if (seasonRes.ok) {
+          const seasons = await seasonRes.json();
+          seasons.forEach(s => {
+            const opt = document.createElement("option");
+            opt.value = s.id;
+            opt.textContent = s.name + " (" + s.team_count + " teams)";
+            sSel.appendChild(opt);
+          });
+        }
       } catch(e) {
         sel.innerHTML = '<option value="">Failed to load</option>';
         document.getElementById("pushError").textContent = e.message;
@@ -871,8 +891,9 @@ function getHTML() {
 
     async function confirmPush() {
       const compId = document.getElementById("pushCompSelect").value;
-      if (!compId) {
-        document.getElementById("pushError").textContent = "Select a competition.";
+      const seasonId = document.getElementById("pushSeasonSelect").value;
+      if (!compId && !seasonId) {
+        document.getElementById("pushError").textContent = "Select a competition or season.";
         return;
       }
       document.getElementById("pushError").textContent = "";
@@ -880,15 +901,20 @@ function getHTML() {
         const res = await fetch("/api/push-scoring", {
           method: "POST",
           headers: {"Content-Type":"application/json"},
-          body: JSON.stringify({ event: activeTab, competition_id: compId })
+          body: JSON.stringify({ event: activeTab, competition_id: compId || null, season_id: seasonId || null })
         });
         if (!res.ok) throw new Error(await res.text());
         const result = await res.json();
         closePushModal();
         const toast = document.getElementById("toast");
-        toast.textContent = "Pushed to " + result.competition + ": " + result.added + " added, " + result.skipped + " already existed";
+        let msg = "";
+        if (result.added) msg += result.added + " competitors pushed. ";
+        if (result.skipped) msg += result.skipped + " already existed. ";
+        if (result.teams_added) msg += result.teams_added + " teams added to season. ";
+        if (result.teams_skipped) msg += result.teams_skipped + " teams already in season.";
+        toast.textContent = msg || "Done!";
         toast.style.display = "block";
-        setTimeout(() => toast.style.display = "none", 5000);
+        setTimeout(() => toast.style.display = "none", 6000);
       } catch(e) {
         document.getElementById("pushError").textContent = e.message;
       }
@@ -1217,6 +1243,25 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // List KD Scoring seasons
+  if (url.pathname === "/api/kd-seasons" && req.method === "GET") {
+    try {
+      const KD_SCORING_URL = "https://scoring.kd-evolution.com";
+      const KD_API_KEY = "uscpa-ext-api-2026-kd";
+      const res2 = await fetch(`${KD_SCORING_URL}/api/external/seasons`, {
+        headers: { "X-API-Key": KD_API_KEY }
+      });
+      if (!res2.ok) throw new Error("KD Scoring API error: " + await res2.text());
+      const seasons = await res2.json();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(seasons));
+    } catch (e) {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end(e.message);
+    }
+    return;
+  }
+
   // Push competitors to KD Scoring
   if (url.pathname === "/api/push-scoring" && req.method === "POST") {
     try {
@@ -1247,38 +1292,85 @@ const server = http.createServer(async (req, res) => {
       const KD_SCORING_URL = "https://scoring.kd-evolution.com";
       const KD_API_KEY = "uscpa-ext-api-2026-kd";
       const compId = body.competition_id;
+      const seasonId = body.season_id;
 
-      if (!compId) {
-        res.writeHead(400, { "Content-Type": "text/plain" });
-        res.end("Select a competition");
-        return;
+      let result = { added: 0, skipped: 0 };
+      let match = { name: "" };
+
+      // Push competitors to competition if selected
+      if (compId) {
+        const compsRes = await fetch(`${KD_SCORING_URL}/api/external/competitions`, {
+          headers: { "X-API-Key": KD_API_KEY }
+        });
+        const comps = compsRes.ok ? await compsRes.json() : [];
+        match = comps.find(c => c.id === compId) || { id: compId, name: compId };
+
+        const competitors = regs.map(r => ({
+          name: r.name,
+          comp_class: r.comp_class || "open",
+          country: r.country || "USA",
+          event: "cp_dsz",
+        }));
+
+        const pushRes = await fetch(`${KD_SCORING_URL}/api/external/push-competitors`, {
+          method: "POST",
+          headers: { "X-API-Key": KD_API_KEY, "Content-Type": "application/json" },
+          body: JSON.stringify({ competition_id: compId, competitors }),
+        });
+        if (!pushRes.ok) throw new Error("Push failed: " + await pushRes.text());
+        result = await pushRes.json();
       }
 
-      // Get competition name for the response
-      const compsRes = await fetch(`${KD_SCORING_URL}/api/external/competitions`, {
-        headers: { "X-API-Key": KD_API_KEY }
-      });
-      const comps = compsRes.ok ? await compsRes.json() : [];
-      const match = comps.find(c => c.id === compId) || { id: compId, name: compId };
+      let teams_added = 0, teams_skipped = 0;
 
-      // Push competitors
-      const competitors = regs.map(r => ({
-        name: r.name,
-        comp_class: r.comp_class || "open",
-        country: r.country || "USA",
-        event: "cp_dsz",
-      }));
+      // Push teams to season if selected
+      const seasonId = body.season_id;
+      if (seasonId) {
+        // Find team registrations — group by team_name to find pairs
+        const teamRegs = db.prepare(
+          "SELECT * FROM registration WHERE event = 'Team Registration 2026' AND team_name IS NOT NULL AND team_name != ''"
+        ).all();
 
-      const pushRes = await fetch(`${KD_SCORING_URL}/api/external/push-competitors`, {
-        method: "POST",
-        headers: { "X-API-Key": KD_API_KEY, "Content-Type": "application/json" },
-        body: JSON.stringify({ competition_id: compId, competitors }),
-      });
-      if (!pushRes.ok) throw new Error("Push failed: " + await pushRes.text());
-      const result = await pushRes.json();
+        const teamMap = {};
+        for (const r of teamRegs) {
+          const tn = r.team_name.trim();
+          if (!teamMap[tn]) teamMap[tn] = [];
+          teamMap[tn].push(r.name);
+        }
+
+        const teamsToSend = [];
+        for (const [teamName, members] of Object.entries(teamMap)) {
+          if (members.length >= 2) {
+            teamsToSend.push({
+              team_name: teamName,
+              member1: members[0],
+              member2: members[1],
+            });
+          }
+        }
+
+        if (teamsToSend.length > 0) {
+          const teamRes = await fetch(`${KD_SCORING_URL}/api/external/season/${seasonId}/add-team`, {
+            method: "POST",
+            headers: { "X-API-Key": KD_API_KEY, "Content-Type": "application/json" },
+            body: JSON.stringify({ teams: teamsToSend }),
+          });
+          if (teamRes.ok) {
+            const teamResult = await teamRes.json();
+            teams_added = teamResult.added || 0;
+            teams_skipped = teamResult.skipped || 0;
+          }
+        }
+      }
 
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ added: result.added, skipped: result.skipped, competition: match.name }));
+      res.end(JSON.stringify({
+        added: compId ? result.added : 0,
+        skipped: compId ? result.skipped : 0,
+        competition: match.name,
+        teams_added,
+        teams_skipped,
+      }));
     } catch (e) {
       res.writeHead(500, { "Content-Type": "text/plain" });
       res.end(e.message);
