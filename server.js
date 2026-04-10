@@ -1011,56 +1011,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Public competitors page (no login required)
-  if (url.pathname === "/competitors" && req.method === "GET") {
-    res.writeHead(200, { "Content-Type": "text/html" });
-    res.end(getCompetitorsHTML());
-    return;
-  }
-
-  // Public API for competitors (only returns events on/after their date)
-  if (url.pathname === "/api/competitors" && req.method === "GET") {
-    const today = new Date().toISOString().split("T")[0];
-    const allRegs = getAllFromDB();
-
-    // Group by event, only include events where date <= today
-    const events = {};
-    for (const r of allRegs) {
-      const info = EVENT_INFO[r.event];
-      if (!info || !info.date) continue; // skip league/team (no date)
-      if (info.date > today) continue; // not yet public
-
-      if (!events[r.event]) {
-        events[r.event] = {
-          name: r.event,
-          date: info.date,
-          location: info.location,
-          type: info.type,
-          competitors: [],
-        };
-      }
-
-      // Only add to competitor list if it's a meet/freestyle entry
-      if (r.event_type === "meet" || r.event_type === "freestyle") {
-        events[r.event].competitors.push({
-          name: r.name,
-          country: r.country || "USA",
-          compClass: r.comp_class || "",
-          wingType: r.wing_type || "",
-          wingSize: r.wing_size || "",
-          teamName: r.team_name || "",
-        });
-      }
-    }
-
-    // Sort events by date
-    const sorted = Object.values(events).sort((a, b) => a.date.localeCompare(b.date));
-
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(sorted));
-    return;
-  }
-
   // Auth check for all other routes
   const sessionToken = getCookie(req, "session");
   if (!isValidSession(sessionToken)) {
