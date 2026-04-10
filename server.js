@@ -846,7 +846,8 @@ function getHTML() {
         return;
       }
       const filtered = getFiltered().filter(r => r.event_type === 'meet' || r.event_type === 'freestyle');
-      document.getElementById("pushTabInfo").textContent = activeTab.replace(' Registration 2026','').replace(' 2026','') + " — " + filtered.length + " competitor(s)";
+      const isFreestyle = activeTab.includes('Caribbean') || activeTab.includes('freestyle');
+      document.getElementById("pushTabInfo").textContent = activeTab.replace(' Registration 2026','').replace(' 2026','') + " — " + filtered.length + " competitor(s)" + (isFreestyle ? " (Freestyle — does not count for season)" : "");
       document.getElementById("pushError").textContent = "";
       document.getElementById("pushModal").classList.add("open");
 
@@ -870,14 +871,28 @@ function getHTML() {
           sel.appendChild(opt);
         });
 
-        if (seasonRes.ok) {
-          const seasons = await seasonRes.json();
-          seasons.forEach(s => {
-            const opt = document.createElement("option");
-            opt.value = s.id;
-            opt.textContent = s.name + " (" + s.team_count + " teams)";
-            sSel.appendChild(opt);
-          });
+        // Hide season dropdown for freestyle (doesn't count for season standings)
+        const seasonRow = sSel.parentElement;
+        const seasonLabel = seasonRow.previousElementSibling;
+        const seasonNote = seasonRow.nextElementSibling;
+        if (isFreestyle) {
+          sSel.style.display = 'none';
+          if (seasonLabel) seasonLabel.style.display = 'none';
+          if (seasonNote) seasonNote.style.display = 'none';
+          sSel.value = '';
+        } else {
+          sSel.style.display = '';
+          if (seasonLabel) seasonLabel.style.display = '';
+          if (seasonNote) seasonNote.style.display = '';
+          if (seasonRes.ok) {
+            const seasons = await seasonRes.json();
+            seasons.forEach(s => {
+              const opt = document.createElement("option");
+              opt.value = s.id;
+              opt.textContent = s.name + " (" + s.team_count + " teams)";
+              sSel.appendChild(opt);
+            });
+          }
         }
       } catch(e) {
         sel.innerHTML = '<option value="">Failed to load</option>';
@@ -1323,9 +1338,10 @@ const server = http.createServer(async (req, res) => {
 
       let teams_added = 0, teams_skipped = 0;
 
-      // Push teams to season if selected
-      const seasonId = body.season_id;
-      if (seasonId) {
+      // Push teams to season if selected (freestyle does NOT count for season)
+      const isFreestyleEvent = eventFilter.includes('Caribbean');
+      if (body.season_id && !isFreestyleEvent) {
+        const seasonId = body.season_id;
         // Find team registrations — group by team_name to find pairs
         const teamRegs = db.prepare(
           "SELECT * FROM registration WHERE event = 'Team Registration 2026' AND team_name IS NOT NULL AND team_name != ''"
