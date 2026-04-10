@@ -3,8 +3,8 @@ RUN apk add --no-cache python3 make g++
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install --production
+ARG CACHEBUST=1
 COPY server.js .
-# bust cache v2
 RUN mkdir -p /data
 ENV PORT=3000
 ENV DB_PATH=/data/registrations.db
