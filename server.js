@@ -864,6 +864,12 @@ function getHTML() {
         if (!compRes.ok) throw new Error(await compRes.text());
         const comps = await compRes.json();
         sel.innerHTML = '<option value="">Select competition...</option>';
+        const createOpt = document.createElement("option");
+        createOpt.value = "__create_new__";
+        createOpt.textContent = "+ Create New Competition";
+        createOpt.style.fontWeight = "bold";
+        createOpt.style.color = "#28a745";
+        sel.appendChild(createOpt);
         comps.forEach(c => {
           const opt = document.createElement("option");
           opt.value = c.id;
@@ -905,11 +911,29 @@ function getHTML() {
     }
 
     async function confirmPush() {
-      const compId = document.getElementById("pushCompSelect").value;
+      let compId = document.getElementById("pushCompSelect").value;
       const seasonId = document.getElementById("pushSeasonSelect").value;
       if (!compId && !seasonId) {
         document.getElementById("pushError").textContent = "Select a competition or season.";
         return;
+      }
+      // Auto-create competition if user selected "+ Create New"
+      if (compId === "__create_new__") {
+        const compName = prompt("Enter competition name (e.g. 'USCPA #3 - Skydive City'):");
+        if (!compName) return;
+        try {
+          const createRes = await fetch("/api/kd-create-competition", {
+            method: "POST",
+            headers: {"Content-Type":"application/json"},
+            body: JSON.stringify({ name: compName, event_type: "cp_dsz" })
+          });
+          if (!createRes.ok) throw new Error(await createRes.text());
+          const created = await createRes.json();
+          compId = created.id;
+        } catch(e) {
+          document.getElementById("pushError").textContent = "Failed to create competition: " + e.message;
+          return;
+        }
       }
       document.getElementById("pushError").textContent = "";
       try {
@@ -1251,6 +1275,27 @@ const server = http.createServer(async (req, res) => {
       const comps = await compsRes.json();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(comps));
+    } catch (e) {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end(e.message);
+    }
+    return;
+  }
+
+  // Create KD Scoring competition
+  if (url.pathname === "/api/kd-create-competition" && req.method === "POST") {
+    try {
+      const KD_SCORING_URL = "https://scoring.kd-evolution.com";
+      const KD_API_KEY = "uscpa-ext-api-2026-kd";
+      const createRes = await fetch(`${KD_SCORING_URL}/api/external/create-competition`, {
+        method: "POST",
+        headers: { "X-API-Key": KD_API_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!createRes.ok) throw new Error("KD Scoring API error: " + await createRes.text());
+      const result = await createRes.json();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
     } catch (e) {
       res.writeHead(500, { "Content-Type": "text/plain" });
       res.end(e.message);
