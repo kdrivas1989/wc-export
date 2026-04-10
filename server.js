@@ -1242,7 +1242,7 @@ const server = http.createServer(async (req, res) => {
   // List KD Scoring competitions
   if (url.pathname === "/api/kd-competitions" && req.method === "GET") {
     try {
-      const KD_SCORING_URL = "https://scoring.kd-evolution.com";
+      const KD_SCORING_URL = "https://kdscoring.com";
       const KD_API_KEY = "uscpa-ext-api-2026-kd";
       const compsRes = await fetch(`${KD_SCORING_URL}/api/external/competitions`, {
         headers: { "X-API-Key": KD_API_KEY }
@@ -1261,7 +1261,7 @@ const server = http.createServer(async (req, res) => {
   // List KD Scoring seasons
   if (url.pathname === "/api/kd-seasons" && req.method === "GET") {
     try {
-      const KD_SCORING_URL = "https://scoring.kd-evolution.com";
+      const KD_SCORING_URL = "https://kdscoring.com";
       const KD_API_KEY = "uscpa-ext-api-2026-kd";
       const res2 = await fetch(`${KD_SCORING_URL}/api/external/seasons`, {
         headers: { "X-API-Key": KD_API_KEY }
@@ -1304,7 +1304,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const KD_SCORING_URL = "https://scoring.kd-evolution.com";
+      const KD_SCORING_URL = "https://kdscoring.com";
       const KD_API_KEY = "uscpa-ext-api-2026-kd";
       const compId = body.competition_id;
       const seasonId = body.season_id;
