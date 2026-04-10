@@ -10,3 +10,4 @@ ENV PORT=3000
 ENV DB_PATH=/data/registrations.db
 EXPOSE 3000
 CMD ["node", "server.js"]
+# d3d71ba088bc41bbe94e4b6da3e6e359
