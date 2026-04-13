@@ -1135,6 +1135,20 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Public JSON export with API key (bypasses session auth)
+  if (url.pathname === "/api/export-json" && req.method === "GET") {
+    const key = url.searchParams.get("key");
+    if (key !== "swoop-export-2026") {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid API key" }));
+      return;
+    }
+    const registrations = getAllFromDB();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ registrations }));
+    return;
+  }
+
   // Auth check for all other routes
   const sessionToken = getCookie(req, "session");
   if (!isValidSession(sessionToken)) {
