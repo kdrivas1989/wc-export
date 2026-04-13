@@ -1149,6 +1149,58 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // API-key-authenticated sync and manual entry (bypasses session auth)
+  if (url.pathname === "/api/sync" && req.method === "POST" && url.searchParams.get("key") === "swoop-export-2026") {
+    try {
+      const result = await syncFromWC();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+    } catch (e) {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end(e.message);
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/manual" && req.method === "POST" && url.searchParams.get("key") === "swoop-export-2026") {
+    try {
+      const body = await new Promise((resolve, reject) => {
+        let data = "";
+        req.on("data", (c) => (data += c));
+        req.on("end", () => { try { resolve(JSON.parse(data)); } catch { reject(new Error("Invalid JSON")); } });
+      });
+      const { competitors, events, price_paid, payment_method } = body;
+      if (!competitors?.length || !events?.length) {
+        res.writeHead(400, { "Content-Type": "text/plain" });
+        res.end("At least one competitor and one event are required");
+        return;
+      }
+      const eventTypes = {
+        "Meet #1 Registration 2026": "meet", "Meet #2 Registration 2026": "meet",
+        "Meet #3 Registration 2026": "meet", "Meet #4 Registration 2026": "meet",
+        "Meet #5 Registration 2026": "meet", "Pilots of the Caribbean 2026": "freestyle",
+        "League Registration 2026": "league", "Team Registration 2026": "team",
+      };
+      const maxManual = db.prepare("SELECT MIN(order_id) as m FROM registration WHERE source = 'manual'").get();
+      let manualId = Math.min((maxManual?.m || 0) - 1, -1);
+      let count = 0;
+      for (const comp of competitors) {
+        const hasLeague = events.includes("League Registration 2026");
+        for (const event of events) {
+          insertManual.run(manualId, comp.name, (comp.email || "").toLowerCase().trim(), comp.country || "USA", event, eventTypes[event] || "meet", hasLeague ? "Member" : "Non-Member", comp.comp_class || null, null, null, null, null, price_paid || "0", payment_method || "cash", comp.team_name || null);
+          count++;
+        }
+        manualId--;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ success: true, added: count }));
+    } catch (e) {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end(e.message);
+    }
+    return;
+  }
+
   // Auth check for all other routes
   const sessionToken = getCookie(req, "session");
   if (!isValidSession(sessionToken)) {
